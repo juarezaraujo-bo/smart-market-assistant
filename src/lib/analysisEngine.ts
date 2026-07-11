@@ -1,7 +1,69 @@
 import { differenceInDays, parseISO } from 'date-fns';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from './supabase';
-import { Venda } from '@/types';
+
+type ProdutoAnalise = {
+  id: string;
+  nome: string;
+  preco_custo: number | string | null;
+  quantidade_vendida?: number | string | null;
+  ultima_venda?: string | null;
+  estoque?: Array<{
+    quantidade_atual: number | string | null;
+    data_validade: string | null;
+  }> | null;
+  vendas?: Array<{
+    quantidade_vendida: number | null;
+    data_venda: string;
+  }> | null;
+};
+
+type AlertaInsert = {
+  cliente_id: string;
+  produto_id: string;
+  tipo: 'vencimento' | 'estoque_baixo' | 'estoque_parado' | 'ruptura';
+  mensagem: string;
+  lido: boolean;
+  whatsapp_status: 'pending' | 'skipped';
+};
+
+const money = (value: number) => value.toFixed(2);
+
+function getVendaMediaDiaria(produto: ProdutoAnalise, hoje: Date) {
+  const quantidadeVendidaProduto = Number(produto.quantidade_vendida || 0);
+  const ultimaVendaProduto = produto.ultima_venda ? parseISO(produto.ultima_venda) : null;
+
+  if (
+    quantidadeVendidaProduto > 0 &&
+    ultimaVendaProduto &&
+    differenceInDays(hoje, ultimaVendaProduto) <= 30
+  ) {
+    return quantidadeVendidaProduto / 30;
+  }
+
+  const vendas30Dias = (produto.vendas || []).filter((venda) =>
+    differenceInDays(hoje, parseISO(venda.data_venda)) <= 30
+  );
+  const totalVendido30 = vendas30Dias.reduce(
+    (acc, venda) => acc + (venda.quantidade_vendida || 0),
+    0
+  );
+
+  return totalVendido30 > 0 ? totalVendido30 / 30 : 0;
+}
+
+function getDiasSemVenda(produto: ProdutoAnalise, hoje: Date) {
+  if (produto.ultima_venda) {
+    return differenceInDays(hoje, parseISO(produto.ultima_venda));
+  }
+
+  const ultimaVendaHistorica = [...(produto.vendas || [])].sort(
+    (a, b) => new Date(b.data_venda).getTime() - new Date(a.data_venda).getTime()
+  )[0];
+
+  if (!ultimaVendaHistorica) return 999;
+  return differenceInDays(hoje, parseISO(ultimaVendaHistorica.data_venda));
+}
 
 export async function runAnalysis(clienteId: string, client: SupabaseClient = supabase) {
   const { data: produtos, error: prodError } = await client
@@ -15,84 +77,77 @@ export async function runAnalysis(clienteId: string, client: SupabaseClient = su
   }
 
   const hoje = new Date();
-  const alertasParaInserir = [];
+  const alertasParaInserir: AlertaInsert[] = [];
 
-  for (const produto of produtos) {
+  for (const produto of produtos as ProdutoAnalise[]) {
     const estoque = produto.estoque?.[0];
-    const vendas = produto.vendas || [];
-
     if (!estoque) continue;
 
-    const EA = estoque.quantidade_atual;
-    const PC = produto.preco_custo;
-
-    const vendas30Dias = vendas.filter((v: Venda) =>
-      differenceInDays(hoje, parseISO(v.data_venda)) <= 30
-    );
-    const totalVendido30 = vendas30Dias.reduce((acc: number, v: Venda) => acc + v.quantidade_vendida, 0);
-    const VMD = totalVendido30 / 30 || 0.1;
+    const estoqueAtual = Number(estoque.quantidade_atual || 0);
+    const precoCusto = Number(produto.preco_custo || 0);
+    const vendaMediaDiaria = getVendaMediaDiaria(produto, hoje);
 
     if (estoque.data_validade) {
-      const dataValidade = parseISO(estoque.data_validade);
-      const diasParaVencer = differenceInDays(dataValidade, hoje);
+      const diasParaVencer = differenceInDays(parseISO(estoque.data_validade), hoje);
 
-      if (diasParaVencer <= 30 && diasParaVencer >= 0) {
-        const vendaEstimada = VMD * diasParaVencer;
-        const qtdRisco = Math.max(0, EA - vendaEstimada);
-        const valorRisco = qtdRisco * PC;
+      if (diasParaVencer >= 0 && diasParaVencer <= 7) {
+        const vendaEstimadaAteVencer = vendaMediaDiaria * diasParaVencer;
+        const quantidadeRisco = Math.max(0, estoqueAtual - vendaEstimadaAteVencer);
+        const valorRisco = quantidadeRisco * precoCusto;
 
-        if (qtdRisco > 0) {
+        if (quantidadeRisco > 0) {
           alertasParaInserir.push({
             cliente_id: clienteId,
             produto_id: produto.id,
             tipo: 'vencimento',
-            mensagem: `${produto.nome} vence em ${diasParaVencer} dias. Risco de perda de ${Math.round(qtdRisco)} un (R$ ${valorRisco.toFixed(2)}).`,
+            mensagem: `${produto.nome} vence em ${diasParaVencer} dias. Risco de perda de ${Math.round(quantidadeRisco)} un (R$ ${money(valorRisco)}).`,
             lido: false,
+            whatsapp_status: diasParaVencer <= 3 ? 'pending' : 'skipped',
           });
         }
       }
     }
 
-    const diasDeCobertura = EA / VMD;
+    if (estoqueAtual > 0 && vendaMediaDiaria > 0) {
+      const diasParaAcabar = estoqueAtual / vendaMediaDiaria;
 
-    if (diasDeCobertura < 3) {
-      alertasParaInserir.push({
-        cliente_id: clienteId,
-        produto_id: produto.id,
-        tipo: 'ruptura',
-        mensagem: `RUPTURA: ${produto.nome} deve zerar em menos de 3 dias!`,
-        lido: false,
-      });
-    } else if (diasDeCobertura <= 7) {
-      alertasParaInserir.push({
-        cliente_id: clienteId,
-        produto_id: produto.id,
-        tipo: 'estoque_baixo',
-        mensagem: `Estoque Baixo: ${produto.nome} tem apenas ${EA} un. Acaba em aprox. ${Math.round(diasDeCobertura)} dias.`,
-        lido: false,
-      });
+      if (diasParaAcabar <= 3) {
+        alertasParaInserir.push({
+          cliente_id: clienteId,
+          produto_id: produto.id,
+          tipo: 'ruptura',
+          mensagem: `RUPTURA: ${produto.nome} deve zerar em menos de 3 dias.`,
+          lido: false,
+          whatsapp_status: 'pending',
+        });
+      } else if (diasParaAcabar <= 5) {
+        alertasParaInserir.push({
+          cliente_id: clienteId,
+          produto_id: produto.id,
+          tipo: 'estoque_baixo',
+          mensagem: `Estoque Baixo: ${produto.nome} tem apenas ${estoqueAtual} un. Acaba em aprox. ${Math.ceil(diasParaAcabar)} dias.`,
+          lido: false,
+          whatsapp_status: 'skipped',
+        });
+      }
     }
 
-    const ultimaVenda = vendas.length > 0
-      ? vendas.sort((a: Venda, b: Venda) => new Date(b.data_venda).getTime() - new Date(a.data_venda).getTime())[0]
-      : null;
+    const diasSemVenda = getDiasSemVenda(produto, hoje);
+    const capitalParado = estoqueAtual * precoCusto;
 
-    const diasSemVenda = ultimaVenda
-      ? differenceInDays(hoje, parseISO(ultimaVenda.data_venda))
-      : 999;
-
-    if (diasSemVenda > 30 && EA > 0) {
-      const capitalParado = EA * PC;
+    if (diasSemVenda >= 30 && estoqueAtual > 0 && capitalParado >= 50) {
       alertasParaInserir.push({
         cliente_id: clienteId,
         produto_id: produto.id,
         tipo: 'estoque_parado',
-        mensagem: `${produto.nome} sem vendas ha ${diasSemVenda === 999 ? 'mais de 30' : diasSemVenda} dias. R$ ${capitalParado.toFixed(2)} parados em estoque.`,
+        mensagem: `${produto.nome} sem vendas há ${diasSemVenda === 999 ? 'mais de 30' : diasSemVenda} dias. R$ ${money(capitalParado)} parados em estoque.`,
         lido: false,
+        whatsapp_status: capitalParado >= 100 ? 'pending' : 'skipped',
       });
     }
   }
 
+  // MVP: a cada importacao, substitui os alertas operacionais ainda nao lidos.
   await client
     .from('alertas')
     .delete()

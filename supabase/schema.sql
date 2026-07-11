@@ -25,9 +25,21 @@ CREATE TABLE IF NOT EXISTS public.produtos (
     categoria TEXT,
     preco_custo NUMERIC(10, 2) CHECK (preco_custo >= 0),
     preco_venda NUMERIC(10, 2) CHECK (preco_venda >= 0),
+    quantidade_vendida INTEGER DEFAULT 0 CHECK (quantidade_vendida >= 0),
+    ultima_venda DATE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(cliente_id, nome)
 );
+
+ALTER TABLE public.produtos
+  ADD COLUMN IF NOT EXISTS quantidade_vendida INTEGER DEFAULT 0 CHECK (quantidade_vendida >= 0);
+
+ALTER TABLE public.produtos
+  ADD COLUMN IF NOT EXISTS ultima_venda DATE;
+
+ALTER TABLE public.produtos
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 
 -- 3. Tabela de Estoque
 CREATE TABLE IF NOT EXISTS public.estoque (

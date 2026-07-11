@@ -14,6 +14,22 @@ type UploadHistory = {
   linhas_processadas: number;
   created_at: string;
 };
+type UploadResult = {
+  error?: string;
+  alertas_gerados?: number;
+  linhas_validas?: number;
+  produtos_inseridos?: number;
+  produtos_atualizados?: number;
+  erros?: Array<{
+    row?: number;
+    field?: string;
+    value?: unknown;
+    produto?: string;
+    message?: string;
+    hint?: string | null;
+    code?: string | null;
+  }>;
+};
 
 export default function UploadsPage() {
   const [loading, setLoading] = useState(false);
@@ -102,11 +118,26 @@ export default function UploadsPage() {
         body: formData,
       });
 
-      const result = await response.json();
+      const result = (await response.json()) as UploadResult;
 
-      if (!response.ok) throw new Error(result.error || 'Falha no upload.');
+      if (!response.ok) {
+        const firstError = result.erros?.[0];
+        const detail = firstError?.message
+          ? ` ${firstError.message}${firstError.hint ? ` (${firstError.hint})` : ''}`
+          : '';
+        throw new Error(`${result.error || 'Falha no upload.'}${detail}`);
+      }
 
-      setMessage({ type: 'success', text: `Sucesso! ${result.report.validRows} produtos processados e ${result.alertsGenerated} alertas gerados.` });
+      const inserted = result.produtos_inseridos ?? 0;
+      const updated = result.produtos_atualizados ?? 0;
+      const errors = result.erros?.length ?? 0;
+      const validRows = result.linhas_validas ?? inserted + updated;
+      const alertsGenerated = result.alertas_gerados ?? 0;
+
+      setMessage({
+        type: errors > 0 ? 'error' : 'success',
+        text: `Upload concluido: ${validRows} linhas validas, ${inserted} produtos inseridos, ${updated} atualizados e ${alertsGenerated} alertas gerados${errors > 0 ? ` (${errors} erro(s) na persistencia).` : '.'}`,
+      });
       fetchHistory(cliente.id);
     } catch (err: unknown) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Falha no upload.' });

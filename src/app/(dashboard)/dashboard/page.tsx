@@ -1,20 +1,51 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { 
-  AlertCircle, 
-  Clock, 
-  TrendingDown, 
-  DollarSign, 
+import {
+  AlertCircle,
+  Clock,
+  TrendingDown,
+  DollarSign,
   Package,
-  Loader2
+  Loader2,
+  type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-const StatCard = ({ label, value, subValue, icon: Icon, color, loading }: any) => (
+type StatCardProps = {
+  label: string;
+  value: string | number;
+  subValue: string;
+  icon: LucideIcon;
+  color: string;
+  loading: boolean;
+};
+
+type AlertSummary = {
+  tipo: string | null;
+  mensagem: string | null;
+  whatsapp_status: string | null;
+};
+
+type InventorySummary = {
+  preco_custo: number | null;
+  estoque?: Array<{
+    quantidade_atual: number | null;
+  }> | null;
+};
+
+type UploadSummary = {
+  id: string;
+  nome_arquivo: string;
+  status: string;
+  linhas_processadas: number;
+  created_at: string;
+};
+
+const StatCard = ({ label, value, subValue, icon: Icon, color, loading }: StatCardProps) => (
   <div className="card">
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
-      <div style={{ padding: '8px', borderRadius: '6px', background: `${color}20`, color: color }}>
+      <div style={{ padding: '8px', borderRadius: '6px', background: `${color}20`, color }}>
         <Icon size={20} />
       </div>
     </div>
@@ -35,10 +66,10 @@ export default function DashboardOverview() {
     criticos: 0,
     vencimento: 0,
     baixo: 0,
-    capital: 0
+    capital: 0,
   });
   const [loading, setLoading] = useState(true);
-  const [recentUploads, setRecentUploads] = useState<any[]>([]);
+  const [recentUploads, setRecentUploads] = useState<UploadSummary[]>([]);
 
   useEffect(() => {
     async function fetchStats() {
@@ -47,7 +78,7 @@ export default function DashboardOverview() {
 
         // Diagnóstico de Sessão
         const { data: { session } } = await supabase.auth.getSession();
-        
+
         if (process.env.NODE_ENV === 'development') {
           console.log('[Auth Debug] Dashboard Session active:', !!session);
           console.log('[Auth Debug] Dashboard User Role:', session?.user?.role || 'anon');
@@ -58,20 +89,26 @@ export default function DashboardOverview() {
           return;
         }
 
-        // 1. Buscar Alertas
-        const { data: alerts } = await supabase.from('alertas').select('tipo, mensagem').eq('lido', false);
-        
-        // 2. Buscar Produtos para Capital Parado
-        const { data: inventory } = await supabase.from('produtos').select('preco_custo, estoque(quantidade_atual)');
+        const { data: alerts } = await supabase
+          .from('alertas')
+          .select('tipo, mensagem, whatsapp_status')
+          .eq('lido', false);
 
-        const criticos = alerts?.filter(a => a.tipo === 'ruptura').length || 0;
-        const vencimento = alerts?.filter(a => a.tipo === 'vencimento').length || 0;
-        const baixo = alerts?.filter(a => a.tipo === 'estoque_baixo').length || 0;
-        
-        const capital = inventory?.reduce((acc, p) => {
-          const qty = p.estoque?.[0]?.quantidade_atual || 0;
-          return acc + (qty * (p.preco_custo || 0));
-        }, 0) || 0;
+        const { data: inventory } = await supabase
+          .from('produtos')
+          .select('preco_custo, estoque(quantidade_atual)');
+
+        const alertRows = (alerts || []) as AlertSummary[];
+        const inventoryRows = (inventory || []) as InventorySummary[];
+
+        const criticos = alertRows.filter((alert) => alert.whatsapp_status === 'pending').length;
+        const vencimento = alertRows.filter((alert) => alert.tipo === 'vencimento').length;
+        const baixo = alertRows.filter((alert) => alert.tipo === 'estoque_baixo').length;
+
+        const capital = inventoryRows.reduce((acc, product) => {
+          const qty = product.estoque?.[0]?.quantidade_atual || 0;
+          return acc + (qty * (product.preco_custo || 0));
+        }, 0);
 
         setStats({ criticos, vencimento, baixo, capital });
 
@@ -81,8 +118,8 @@ export default function DashboardOverview() {
           .select('*')
           .order('created_at', { ascending: false })
           .limit(3);
-        
-        setRecentUploads(uploads || []);
+
+        setRecentUploads((uploads || []) as UploadSummary[]);
       } catch (error) {
         console.error('Erro ao carregar dashboard:', error);
       } finally {
@@ -101,36 +138,36 @@ export default function DashboardOverview() {
       </div>
 
       <div className="stats-grid">
-        <StatCard 
-          label="Alertas Críticos" 
-          value={stats.criticos} 
-          subValue="Ruptura imediata" 
-          icon={AlertCircle} 
-          color="#ef4444" 
+        <StatCard
+          label="Alertas Críticos"
+          value={stats.criticos}
+          subValue="Pendentes para WhatsApp"
+          icon={AlertCircle}
+          color="#ef4444"
           loading={loading}
         />
-        <StatCard 
-          label="Próximos Vencimentos" 
-          value={stats.vencimento} 
-          subValue="Nos próximos 30 dias" 
-          icon={Clock} 
-          color="#f59e0b" 
+        <StatCard
+          label="Próximos Vencimentos"
+          value={stats.vencimento}
+          subValue="Nos próximos 7 dias"
+          icon={Clock}
+          color="#f59e0b"
           loading={loading}
         />
-        <StatCard 
-          label="Estoque Baixo" 
-          value={stats.baixo} 
-          subValue="Abaixo da margem de giro" 
-          icon={TrendingDown} 
-          color="#3b82f6" 
+        <StatCard
+          label="Estoque Baixo"
+          value={stats.baixo}
+          subValue="Abaixo da margem de giro"
+          icon={TrendingDown}
+          color="#3b82f6"
           loading={loading}
         />
-        <StatCard 
-          label="Capital em Estoque" 
-          value={`R$ ${stats.capital.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`} 
-          subValue="Total investido parado" 
-          icon={DollarSign} 
-          color="#10b981" 
+        <StatCard
+          label="Capital em Estoque"
+          value={`R$ ${stats.capital.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+          subValue="Total investido parado"
+          icon={DollarSign}
+          color="#10b981"
           loading={loading}
         />
       </div>
@@ -138,7 +175,7 @@ export default function DashboardOverview() {
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
         <div className="card">
           <h3 style={{ fontSize: '16px', marginBottom: '24px' }}>Últimas Importações</h3>
-          
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {recentUploads.length > 0 ? recentUploads.map((upload) => (
               <div key={upload.id} style={{ display: 'flex', alignItems: 'center', gap: '16px', paddingBottom: '16px', borderBottom: '1px solid var(--border)' }}>

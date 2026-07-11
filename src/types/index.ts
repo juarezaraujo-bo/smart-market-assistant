@@ -18,7 +18,10 @@ export type Produto = {
   categoria: string;
   preco_custo: number;
   preco_venda: number;
+  quantidade_vendida: number;
+  ultima_venda: string | null;
   created_at: string;
+  updated_at?: string;
 };
 
 export type Estoque = {
