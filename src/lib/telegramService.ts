@@ -32,9 +32,10 @@ export type TelegramProcessDetail = {
   error?: string;
 };
 
-function requireTelegramConfig() {
+function requireTelegramConfig(chatIdOverride?: string) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+  const configuredChatId = process.env.TELEGRAM_CHAT_ID;
+  const chatId = chatIdOverride || configuredChatId;
 
   if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN não configurado.');
   if (!chatId) throw new Error('TELEGRAM_CHAT_ID não configurado.');
@@ -73,8 +74,8 @@ function formatAlertMessage(alert: PendingTelegramAlert) {
   ].join('\n');
 }
 
-export async function sendTelegramMessage(message: string) {
-  const { botToken, chatId } = requireTelegramConfig();
+export async function sendTelegramMessage(message: string, chatId?: string) {
+  const { botToken, chatId: targetChatId } = requireTelegramConfig(chatId);
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
 
   const response = await fetch(url, {
@@ -83,7 +84,7 @@ export async function sendTelegramMessage(message: string) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      chat_id: chatId,
+      chat_id: targetChatId,
       text: message,
       parse_mode: 'HTML',
     }),
