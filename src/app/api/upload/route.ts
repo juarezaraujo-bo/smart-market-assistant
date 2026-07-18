@@ -25,6 +25,10 @@ type ProdutoRecord = {
   nome: string;
 };
 
+type UploadHistoryRecord = {
+  id: string;
+};
+
 type UploadSummary = {
   total_linhas: number;
   linhas_validas: number;
@@ -32,6 +36,8 @@ type UploadSummary = {
   produtos_atualizados: number;
   estoques_inseridos: number;
   estoques_atualizados: number;
+  periodos_inseridos: number;
+  periodos_atualizados: number;
   vendas_inseridas: number;
   erros: SupabaseErrorInfo[];
 };
@@ -65,6 +71,37 @@ function logDebug(label: string, payload: unknown) {
 
 function logSupabaseError(error: SupabaseErrorInfo) {
   if (isDev) console.error('[Upload Supabase Error]', error);
+}
+
+function isValidDateString(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function validatePeriodo(periodoInicio: string, periodoFim: string) {
+  if (!periodoInicio || !periodoFim) {
+    return 'Informe periodo_inicio e periodo_fim.';
+  }
+
+  if (!isValidDateString(periodoInicio)) {
+    return 'periodo_inicio deve estar no formato YYYY-MM-DD.';
+  }
+
+  if (!isValidDateString(periodoFim)) {
+    return 'periodo_fim deve estar no formato YYYY-MM-DD.';
+  }
+
+  if (periodoFim < periodoInicio) {
+    return 'periodo_fim nao pode ser menor que periodo_inicio.';
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  if (periodoFim > today) {
+    return 'periodo_fim nao pode ser uma data futura.';
+  }
+
+  return null;
 }
 
 function createSupabaseClients(accessToken: string) {
@@ -275,6 +312,130 @@ async function persistEstoque(
   else summary.estoques_inseridos++;
 }
 
+async function createUploadHistory(
+  dbClient: SupabaseClient,
+  clienteId: string,
+  fileName: string,
+  periodoInicio: string,
+  periodoFim: string
+): Promise<UploadHistoryRecord> {
+  const payload = {
+    cliente_id: clienteId,
+    nome_arquivo: fileName,
+    status: 'processando',
+    linhas_processadas: 0,
+    periodo_inicio: periodoInicio,
+    periodo_fim: periodoFim,
+  };
+
+  logDebug('[Upload History Insert Payload]', payload);
+
+  const { data, error } = await dbClient
+    .from('uploads_history')
+    .insert(payload)
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    throw Object.assign(new Error(error?.message || 'Historico de upload nao retornado apos gravacao.'), {
+      supabaseError: error || { message: 'Historico de upload nao retornado apos gravacao.' },
+      scope: 'uploads_history.insert',
+    });
+  }
+
+  return data as UploadHistoryRecord;
+}
+
+async function updateUploadHistoryStatus(
+  dbClient: SupabaseClient,
+  uploadId: string,
+  status: string,
+  linhasProcessadas: number,
+  summary: UploadSummary
+) {
+  const { error } = await dbClient
+    .from('uploads_history')
+    .update({
+      status,
+      linhas_processadas: linhasProcessadas,
+    })
+    .eq('id', uploadId);
+
+  if (error) {
+    const uploadError = toSupabaseErrorInfo('uploads_history.update', error);
+    summary.erros.push(uploadError);
+    logSupabaseError(uploadError);
+  }
+}
+
+async function persistProdutoPeriodo(
+  dbClient: SupabaseClient,
+  clienteId: string,
+  produto: ProdutoRecord,
+  uploadId: string,
+  periodoInicio: string,
+  periodoFim: string,
+  row: ProductRow,
+  rowNumber: number,
+  summary: UploadSummary
+) {
+  const { data: existingPeriod, error: findError } = await dbClient
+    .from('produto_periodos')
+    .select('id')
+    .eq('cliente_id', clienteId)
+    .eq('produto_id', produto.id)
+    .eq('periodo_inicio', periodoInicio)
+    .eq('periodo_fim', periodoFim)
+    .maybeSingle();
+
+  if (findError) {
+    const error = toSupabaseErrorInfo('produto_periodos.select', findError, rowNumber, produto.nome);
+    summary.erros.push(error);
+    logSupabaseError(error);
+    return;
+  }
+
+  const payload = {
+    cliente_id: clienteId,
+    produto_id: produto.id,
+    upload_id: uploadId,
+    periodo_inicio: periodoInicio,
+    periodo_fim: periodoFim,
+    quantidade_vendida: row.quantidade_vendida,
+    estoque_atual: row.estoque,
+    preco_custo: row.custo,
+    preco_venda: row.preco_venda,
+    ultima_venda: row.ultima_venda,
+    data_validade: row.validade,
+  };
+
+  logDebug('[Upload Produto Periodo Payload]', {
+    row: rowNumber,
+    produto: produto.nome,
+    operation: existingPeriod ? 'update' : 'insert',
+    payload,
+  });
+
+  const result = existingPeriod
+    ? await dbClient.from('produto_periodos').update(payload).eq('id', existingPeriod.id)
+    : await dbClient.from('produto_periodos').insert(payload);
+
+  if (result.error) {
+    const error = toSupabaseErrorInfo(
+      existingPeriod ? 'produto_periodos.update' : 'produto_periodos.insert',
+      result.error,
+      rowNumber,
+      produto.nome
+    );
+    summary.erros.push(error);
+    logSupabaseError(error);
+    return;
+  }
+
+  if (existingPeriod) summary.periodos_atualizados++;
+  else summary.periodos_inseridos++;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const authorization = req.headers.get('authorization');
@@ -307,6 +468,14 @@ export async function POST(req: NextRequest) {
     const file = formData.get('file') as File | null;
     if (!file) return NextResponse.json({ error: 'Nenhum arquivo enviado.' }, { status: 400 });
 
+    const periodoInicio = String(formData.get('periodo_inicio') || '').trim();
+    const periodoFim = String(formData.get('periodo_fim') || '').trim();
+    const periodoError = validatePeriodo(periodoInicio, periodoFim);
+    if (periodoError) {
+      return NextResponse.json({ error: periodoError }, { status: 400 });
+    }
+
+    const uploadHistory = await createUploadHistory(dbClient, cliente.id, file.name, periodoInicio, periodoFim);
     const report = await ExcelService.parseFile(file);
     const summary: UploadSummary = {
       total_linhas: report.totalRows,
@@ -315,6 +484,8 @@ export async function POST(req: NextRequest) {
       produtos_atualizados: 0,
       estoques_inseridos: 0,
       estoques_atualizados: 0,
+      periodos_inseridos: 0,
+      periodos_atualizados: 0,
       vendas_inseridas: 0,
       erros: [],
     };
@@ -322,6 +493,8 @@ export async function POST(req: NextRequest) {
     logDebug('[Upload Parse Summary]', {
       file: file.name,
       cliente_id: cliente.id,
+      periodo_inicio: periodoInicio,
+      periodo_fim: periodoFim,
       total_linhas: report.totalRows,
       linhas_validas: report.validRows,
       rejectedRows: report.rejectedRows,
@@ -331,6 +504,8 @@ export async function POST(req: NextRequest) {
     });
 
     if (report.status === 'failed') {
+      await updateUploadHistoryStatus(dbClient, uploadHistory.id, 'failed', report.validRows, summary);
+
       return NextResponse.json({
         error: report.validRows === 0 ? 'Nenhuma linha valida encontrada no CSV.' : 'Falha na validacao dos dados.',
         total_linhas: summary.total_linhas,
@@ -349,6 +524,17 @@ export async function POST(req: NextRequest) {
       if (!produto) continue;
 
       await persistEstoque(dbClient, produto, row, rowNumber, summary);
+      await persistProdutoPeriodo(
+        dbClient,
+        cliente.id,
+        produto,
+        uploadHistory.id,
+        periodoInicio,
+        periodoFim,
+        row,
+        rowNumber,
+        summary
+      );
       if (row.quantidade_vendida > 0) summary.vendas_inseridas++;
     }
 
@@ -371,6 +557,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (report.validRows > 0 && produtosPersistidos === 0) {
+      await updateUploadHistoryStatus(dbClient, uploadHistory.id, 'failed', report.validRows, summary);
       return NextResponse.json({
         error: 'Nenhum produto valido foi persistido no Supabase.',
         produtos_validos: summary.linhas_validas,
@@ -379,6 +566,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (report.validRows > 0 && (produtosNoBanco ?? 0) === 0) {
+      await updateUploadHistoryStatus(dbClient, uploadHistory.id, 'failed', report.validRows, summary);
       return NextResponse.json({
         error: 'A gravacao terminou sem produtos visiveis na tabela produtos.',
         produtos_validos: summary.linhas_validas,
@@ -386,18 +574,13 @@ export async function POST(req: NextRequest) {
       }, { status: 500 });
     }
 
-    const { error: uploadHistoryError } = await dbClient.from('uploads_history').insert({
-      cliente_id: cliente.id,
-      nome_arquivo: file.name,
-      status: summary.erros.length > 0 ? 'partial' : report.status,
-      linhas_processadas: report.validRows,
-    });
-
-    if (uploadHistoryError) {
-      const error = toSupabaseErrorInfo('uploads_history.insert', uploadHistoryError);
-      summary.erros.push(error);
-      logSupabaseError(error);
-    }
+    await updateUploadHistoryStatus(
+      dbClient,
+      uploadHistory.id,
+      summary.erros.length > 0 ? 'partial' : report.status,
+      report.validRows,
+      summary
+    );
 
     const alertsGenerated = await runAnalysis(cliente.id, dbClient);
 
@@ -411,6 +594,8 @@ export async function POST(req: NextRequest) {
       erros: summary.erros,
       estoques_inseridos: summary.estoques_inseridos,
       estoques_atualizados: summary.estoques_atualizados,
+      periodos_inseridos: summary.periodos_inseridos,
+      periodos_atualizados: summary.periodos_atualizados,
       vendas_inseridas: summary.vendas_inseridas,
       alertas_gerados: alertsGenerated,
       cliente_id: cliente.id,

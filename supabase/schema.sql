@@ -96,7 +96,32 @@ CREATE TABLE IF NOT EXISTS public.uploads_history (
     nome_arquivo TEXT NOT NULL,
     status TEXT DEFAULT 'processando',
     linhas_processadas INTEGER DEFAULT 0,
+    periodo_inicio DATE,
+    periodo_fim DATE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE public.uploads_history
+  ADD COLUMN IF NOT EXISTS periodo_inicio DATE;
+
+ALTER TABLE public.uploads_history
+  ADD COLUMN IF NOT EXISTS periodo_fim DATE;
+
+-- 8. Tabela de Historico por Produto e Periodo
+CREATE TABLE IF NOT EXISTS public.produto_periodos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cliente_id UUID NOT NULL REFERENCES public.clientes(id) ON DELETE CASCADE,
+    produto_id UUID NOT NULL REFERENCES public.produtos(id) ON DELETE CASCADE,
+    upload_id UUID REFERENCES public.uploads_history(id) ON DELETE SET NULL,
+    periodo_inicio DATE NOT NULL,
+    periodo_fim DATE NOT NULL,
+    quantidade_vendida NUMERIC NOT NULL DEFAULT 0,
+    estoque_atual NUMERIC NOT NULL DEFAULT 0,
+    preco_custo NUMERIC,
+    preco_venda NUMERIC,
+    ultima_venda DATE,
+    data_validade DATE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Habilitar RLS
@@ -106,6 +131,7 @@ ALTER TABLE public.estoque ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.alertas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.uploads_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.produto_periodos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.whatsapp_logs ENABLE ROW LEVEL SECURITY;
 
 -- Permissoes de schema e tabelas
@@ -123,6 +149,7 @@ DROP POLICY IF EXISTS "Acesso Autenticado - Estoque" ON public.estoque;
 DROP POLICY IF EXISTS "Acesso Autenticado - Vendas" ON public.vendas;
 DROP POLICY IF EXISTS "Acesso Autenticado - Alertas" ON public.alertas;
 DROP POLICY IF EXISTS "Acesso Autenticado - Uploads" ON public.uploads_history;
+DROP POLICY IF EXISTS "Acesso Autenticado - Produto Periodos" ON public.produto_periodos;
 DROP POLICY IF EXISTS "Acesso Autenticado - Logs" ON public.whatsapp_logs;
 
 -- Policies atuais por usuario autenticado
@@ -132,6 +159,7 @@ DROP POLICY IF EXISTS "Estoque do usuario" ON public.estoque;
 DROP POLICY IF EXISTS "Vendas do usuario" ON public.vendas;
 DROP POLICY IF EXISTS "Alertas do usuario" ON public.alertas;
 DROP POLICY IF EXISTS "Uploads do usuario" ON public.uploads_history;
+DROP POLICY IF EXISTS "Produto periodos do usuario" ON public.produto_periodos;
 DROP POLICY IF EXISTS "Logs do usuario" ON public.whatsapp_logs;
 
 CREATE POLICY "Clientes pertencem ao usuario" ON public.clientes
@@ -232,6 +260,23 @@ CREATE POLICY "Uploads do usuario" ON public.uploads_history
     )
   );
 
+CREATE POLICY "Produto periodos do usuario" ON public.produto_periodos
+  FOR ALL TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.clientes
+      WHERE clientes.id = produto_periodos.cliente_id
+        AND clientes.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.clientes
+      WHERE clientes.id = produto_periodos.cliente_id
+        AND clientes.user_id = auth.uid()
+    )
+  );
+
 CREATE POLICY "Logs do usuario" ON public.whatsapp_logs
   FOR ALL TO authenticated
   USING (
@@ -256,4 +301,10 @@ CREATE INDEX IF NOT EXISTS idx_produtos_nome_cliente ON public.produtos (cliente
 CREATE INDEX IF NOT EXISTS idx_vendas_data ON public.vendas (data_venda DESC);
 CREATE INDEX IF NOT EXISTS idx_estoque_produto ON public.estoque (produto_id);
 CREATE INDEX IF NOT EXISTS idx_uploads_history_cliente ON public.uploads_history (cliente_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_produto_periodos_cliente_id ON public.produto_periodos (cliente_id);
+CREATE INDEX IF NOT EXISTS idx_produto_periodos_produto_id ON public.produto_periodos (produto_id);
+CREATE INDEX IF NOT EXISTS idx_produto_periodos_periodo_inicio ON public.produto_periodos (periodo_inicio);
+CREATE INDEX IF NOT EXISTS idx_produto_periodos_periodo_fim ON public.produto_periodos (periodo_fim);
+CREATE INDEX IF NOT EXISTS idx_produto_periodos_upload_id ON public.produto_periodos (upload_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_produto_periodos_cliente_produto_periodo ON public.produto_periodos (cliente_id, produto_id, periodo_inicio, periodo_fim);
 CREATE INDEX IF NOT EXISTS idx_alertas_whatsapp_status ON public.alertas (whatsapp_status) WHERE whatsapp_status = 'pending';

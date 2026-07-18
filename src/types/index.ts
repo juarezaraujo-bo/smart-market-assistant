@@ -40,6 +40,33 @@ export type Venda = {
   valor_total: number;
 };
 
+export type UploadHistory = {
+  id: string;
+  cliente_id: string;
+  nome_arquivo: string;
+  status: string;
+  linhas_processadas: number;
+  periodo_inicio: string | null;
+  periodo_fim: string | null;
+  created_at: string;
+};
+
+export type ProdutoPeriodo = {
+  id: string;
+  cliente_id: string;
+  produto_id: string;
+  upload_id: string | null;
+  periodo_inicio: string;
+  periodo_fim: string;
+  quantidade_vendida: number;
+  estoque_atual: number;
+  preco_custo: number | null;
+  preco_venda: number | null;
+  ultima_venda: string | null;
+  data_validade: string | null;
+  created_at: string;
+};
+
 export type Alerta = {
   id: string;
   cliente_id: string;

@@ -12,6 +12,8 @@ type UploadHistory = {
   nome_arquivo: string;
   status: string;
   linhas_processadas: number;
+  periodo_inicio?: string | null;
+  periodo_fim?: string | null;
   created_at: string;
 };
 type UploadResult = {
@@ -37,7 +39,10 @@ export default function UploadsPage() {
   const [history, setHistory] = useState<UploadHistory[]>([]);
   const [cliente, setCliente] = useState<UploadCliente | null>(null);
   const [message, setMessage] = useState<UploadMessage | null>(null);
+  const [periodoInicio, setPeriodoInicio] = useState('');
+  const [periodoFim, setPeriodoFim] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const today = new Date().toISOString().slice(0, 10);
 
   const fetchHistory = useCallback(async (clienteId: string) => {
     const { data } = await supabase
@@ -95,6 +100,34 @@ export default function UploadsPage() {
     void Promise.resolve().then(loadUploadContext);
   }, [loadUploadContext]);
 
+  const validatePeriodo = () => {
+    if (!periodoInicio || !periodoFim) {
+      return 'Informe o periodo inicial e o periodo final antes de importar.';
+    }
+
+    if (periodoFim < periodoInicio) {
+      return 'O periodo final nao pode ser menor que o periodo inicial.';
+    }
+
+    if (periodoFim > today) {
+      return 'O periodo final nao pode ser uma data futura.';
+    }
+
+    return null;
+  };
+
+  const openFilePicker = () => {
+    if (loading || initialLoading || !cliente) return;
+
+    const periodoError = validatePeriodo();
+    if (periodoError) {
+      setMessage({ type: 'error', text: periodoError });
+      return;
+    }
+
+    fileInputRef.current?.click();
+  };
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -103,12 +136,17 @@ export default function UploadsPage() {
     setMessage(null);
 
     try {
+      const periodoError = validatePeriodo();
+      if (periodoError) throw new Error(periodoError);
+
       const { data: { session } } = await supabase.auth.getSession();
       if (!session || !cliente) throw new Error('Cadastre um mercado antes de importar dados.');
 
       const formData = new FormData();
       formData.append('file', file);
       formData.append('clienteId', cliente.id);
+      formData.append('periodo_inicio', periodoInicio);
+      formData.append('periodo_fim', periodoFim);
 
       const response = await fetch('/api/upload', {
         method: 'POST',
@@ -172,6 +210,49 @@ export default function UploadsPage() {
         </div>
       )}
 
+      <div className="card" style={{ padding: '20px', marginBottom: '24px' }}>
+        <h3 style={{ fontSize: '16px', marginBottom: '16px' }}>Periodo da importacao</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: 'var(--text-muted)' }}>
+            Periodo inicial
+            <input
+              type="date"
+              value={periodoInicio}
+              max={today}
+              onChange={(event) => setPeriodoInicio(event.target.value)}
+              disabled={loading || initialLoading}
+              style={{
+                height: '44px',
+                borderRadius: '8px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-muted)',
+                color: 'var(--text)',
+                padding: '0 12px',
+              }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: 'var(--text-muted)' }}>
+            Periodo final
+            <input
+              type="date"
+              value={periodoFim}
+              min={periodoInicio || undefined}
+              max={today}
+              onChange={(event) => setPeriodoFim(event.target.value)}
+              disabled={loading || initialLoading}
+              style={{
+                height: '44px',
+                borderRadius: '8px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-muted)',
+                color: 'var(--text)',
+                padding: '0 12px',
+              }}
+            />
+          </label>
+        </div>
+      </div>
+
       <div
         style={{
           border: '2px dashed var(--border)',
@@ -183,7 +264,7 @@ export default function UploadsPage() {
           cursor: loading || initialLoading || !cliente ? 'not-allowed' : 'pointer',
           opacity: loading || initialLoading || !cliente ? 0.6 : 1
         }}
-        onClick={() => !loading && !initialLoading && cliente && fileInputRef.current?.click()}
+        onClick={openFilePicker}
       >
         <input
           type="file"
@@ -234,6 +315,9 @@ export default function UploadsPage() {
                 <div style={{ fontSize: '14px', fontWeight: 500 }}>{upload.nome_arquivo}</div>
                 <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                   {new Date(upload.created_at).toLocaleString('pt-BR')}
+                  {upload.periodo_inicio && upload.periodo_fim
+                    ? ` · ${new Date(`${upload.periodo_inicio}T00:00:00`).toLocaleDateString('pt-BR')} a ${new Date(`${upload.periodo_fim}T00:00:00`).toLocaleDateString('pt-BR')}`
+                    : ''}
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
