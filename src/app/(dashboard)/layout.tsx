@@ -4,16 +4,19 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
-import { 
-  LayoutDashboard, 
-  Store, 
-  Package, 
-  UploadCloud, 
-  AlertTriangle, 
-  History, 
+import {
+  LayoutDashboard,
+  Store,
+  Package,
+  UploadCloud,
+  AlertTriangle,
+  History,
   LogOut,
   Settings,
-  Loader2
+  Loader2,
+  ClipboardCheck,
+  Menu,
+  X,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -23,91 +26,144 @@ const navItems = [
   { label: 'Inventário', href: '/inventory', icon: Package },
   { label: 'Importar', href: '/uploads', icon: UploadCloud },
   { label: 'Alertas', href: '/alerts', icon: AlertTriangle },
+  { label: 'Painel de Decisões', href: '/decisoes', icon: ClipboardCheck },
   { label: 'Logs WhatsApp', href: '/logs', icon: History },
 ];
+
+type SidebarContentProps = {
+  pathname: string;
+  isLoggingOut: boolean;
+  onLogout: () => void;
+  onNavigate?: () => void;
+};
+
+function Brand() {
+  return (
+    <div className="sidebar-brand">
+      <div className="sidebar-brand-icon">
+        <AlertTriangle size={18} color="white" />
+      </div>
+      <span>SmartMarket</span>
+    </div>
+  );
+}
+
+function AccountBadge() {
+  return (
+    <div className="account-badge">
+      <span>Admin: GoldTech</span>
+      <div>GT</div>
+    </div>
+  );
+}
+
+function SidebarContent({ pathname, isLoggingOut, onLogout, onNavigate }: SidebarContentProps) {
+  return (
+    <>
+      <Brand />
+
+      <nav className="sidebar-nav">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              title={item.label}
+              aria-label={item.label}
+              className={isActive ? 'active' : undefined}
+              onClick={onNavigate}
+            >
+              <Icon size={18} />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div className="sidebar-footer">
+        <Link href="/settings" title="Configurações" aria-label="Configurações" onClick={onNavigate}>
+          <Settings size={18} />
+          Configurações
+        </Link>
+        <button onClick={onLogout} disabled={isLoggingOut} title="Sair" aria-label="Sair">
+          {isLoggingOut ? <Loader2 size={18} className="animate-spin" /> : <LogOut size={18} />}
+          {isLoggingOut ? 'Saindo...' : 'Sair'}
+        </button>
+      </div>
+    </>
+  );
+}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
     await supabase.auth.signOut();
+    setIsMobileMenuOpen(false);
     router.push('/login');
     router.refresh();
   };
 
   return (
-    <div style={{ display: 'flex' }}>
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '40px', padding: '0 8px' }}>
-          <div style={{ width: '32px', height: '32px', background: 'var(--primary)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <AlertTriangle size={18} color="white" />
-          </div>
-          <span style={{ fontWeight: 700, fontSize: '18px' }}>SmartMarket</span>
-        </div>
-
-        <nav style={{ flex: 1 }}>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = pathname === item.href;
-            return (
-              <Link 
-                key={item.href} 
-                href={item.href}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  padding: '10px 12px',
-                  borderRadius: '6px',
-                  color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
-                  background: isActive ? 'var(--bg-muted)' : 'transparent',
-                  textDecoration: 'none',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  marginBottom: '4px',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <Icon size={18} />
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-
-        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
-          <Link 
-            href="/settings" 
-            style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}
-          >
-            <Settings size={18} />
-            Configurações
-          </Link>
-          <button 
-            onClick={handleLogout}
-            disabled={isLoggingOut}
-            style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', color: 'var(--danger)', background: 'none', border: 'none', fontSize: '14px', width: '100%', cursor: 'pointer' }}
-          >
-            {isLoggingOut ? <Loader2 size={18} className="animate-spin" /> : <LogOut size={18} />}
-            {isLoggingOut ? 'Saindo...' : 'Sair'}
-          </button>
-        </div>
+    <div className="dashboard-shell">
+      <aside className="sidebar" aria-label="Navegação principal">
+        <SidebarContent pathname={pathname} isLoggingOut={isLoggingOut} onLogout={handleLogout} />
       </aside>
 
-      {/* Main Content Area */}
-      <main className="main-content">
-        <header style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '40px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Admin: GoldTech</span>
-            <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 600 }}>
-              GT
+      {isMobileMenuOpen && (
+        <div className="mobile-drawer-layer">
+          <button
+            type="button"
+            className="mobile-drawer-overlay"
+            aria-label="Fechar menu"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+          <aside className="mobile-drawer" aria-label="Menu móvel">
+            <div className="mobile-drawer-header">
+              <Brand />
+              <button
+                type="button"
+                className="mobile-icon-button"
+                aria-label="Fechar menu"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                <X size={20} />
+              </button>
             </div>
-          </div>
+            <SidebarContent
+              pathname={pathname}
+              isLoggingOut={isLoggingOut}
+              onLogout={handleLogout}
+              onNavigate={() => setIsMobileMenuOpen(false)}
+            />
+          </aside>
+        </div>
+      )}
+
+      <main className="main-content">
+        <header className="mobile-topbar">
+          <button
+            type="button"
+            className="mobile-icon-button"
+            aria-label="Abrir menu"
+            onClick={() => setIsMobileMenuOpen(true)}
+          >
+            <Menu size={20} />
+          </button>
+          <span>SmartMarket</span>
+          <AccountBadge />
         </header>
+
+        <header className="desktop-account-header">
+          <AccountBadge />
+        </header>
+
         {children}
       </main>
     </div>

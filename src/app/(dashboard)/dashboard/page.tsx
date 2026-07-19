@@ -76,7 +76,6 @@ export default function DashboardOverview() {
       try {
         setLoading(true);
 
-        // Diagnóstico de Sessão
         const { data: { session } } = await supabase.auth.getSession();
 
         if (process.env.NODE_ENV === 'development') {
@@ -112,7 +111,6 @@ export default function DashboardOverview() {
 
         setStats({ criticos, vencimento, baixo, capital });
 
-        // 3. Buscar Últimos Uploads
         const { data: uploads } = await supabase
           .from('uploads_history')
           .select('*')
@@ -172,21 +170,21 @@ export default function DashboardOverview() {
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
+      <div className="dashboard-content-grid">
         <div className="card">
           <h3 style={{ fontSize: '16px', marginBottom: '24px' }}>Últimas Importações</h3>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="recent-upload-list">
             {recentUploads.length > 0 ? recentUploads.map((upload) => (
-              <div key={upload.id} style={{ display: 'flex', alignItems: 'center', gap: '16px', paddingBottom: '16px', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'var(--bg-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div key={upload.id} className="recent-upload-item">
+                <div className="recent-upload-icon">
                   <Package size={20} color="var(--text-muted)" />
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '14px', fontWeight: 500 }}>{upload.nome_arquivo}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                <div className="recent-upload-info">
+                  <div>{upload.nome_arquivo}</div>
+                  <span>
                     {new Date(upload.created_at).toLocaleString('pt-BR')} • {upload.linhas_processadas} itens
-                  </div>
+                  </span>
                 </div>
                 <div className={`badge ${upload.status === 'success' ? 'badge-success' : 'badge-warning'}`}>
                   {upload.status === 'success' ? 'Sucesso' : 'Parcial'}
@@ -202,7 +200,7 @@ export default function DashboardOverview() {
           <h3 style={{ fontSize: '16px', marginBottom: '16px' }}>Status WhatsApp</h3>
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
             <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--primary)', boxShadow: '0 0 15px var(--primary)' }}></div>
+              <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--primary)', boxShadow: '0 0 15px var(--primary)' }} />
             </div>
             <div style={{ fontWeight: 600, fontSize: '15px' }}>Serviço Ativo</div>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Fila de processamento em execução</p>
