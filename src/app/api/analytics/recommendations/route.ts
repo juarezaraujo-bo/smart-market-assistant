@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import {
-  parseAnalyticsLimit,
-} from '@/lib/analytics/productMetrics';
+import { parseAnalyticsLimit } from '@/lib/analytics/productMetrics';
 import { getProductMetricsForClient } from '@/lib/analytics/productAnalyticsService';
+import {
+  generateProductRecommendations,
+  summarizeProductRecommendations,
+  type RecommendationSeverity,
+  type RecommendationType,
+} from '@/lib/analytics/productRecommendations';
 
 type ClienteRecord = {
   id: string;
@@ -12,6 +16,21 @@ type ClienteRecord = {
 type ErrorWithMessage = {
   message?: string;
 };
+
+const SEVERIDADES_VALIDAS: RecommendationSeverity[] = ['critica', 'alta', 'media', 'baixa', 'informativa'];
+const RECOMENDACOES_VALIDAS: RecommendationType[] = [
+  'RISCO_RUPTURA',
+  'REPOSICAO_PRIORITARIA',
+  'SEM_VENDAS',
+  'EXCESSO_ESTOQUE',
+  'CAPITAL_PARADO',
+  'RISCO_VENCIMENTO',
+  'PRODUTO_VENCIDO',
+  'QUEDA_VENDAS',
+  'CRESCIMENTO_VENDAS',
+  'MARGEM_BAIXA',
+  'MONITORAR',
+];
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +61,20 @@ function isValidDate(value: string) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+function parseSeverity(value: string | null) {
+  if (!value) return null;
+  return SEVERIDADES_VALIDAS.includes(value as RecommendationSeverity)
+    ? (value as RecommendationSeverity)
+    : undefined;
+}
+
+function parseRecommendationType(value: string | null) {
+  if (!value) return null;
+  return RECOMENDACOES_VALIDAS.includes(value as RecommendationType)
+    ? (value as RecommendationType)
+    : undefined;
+}
+
 async function findClienteForUser(supabase: SupabaseClient, userId: string) {
   const { data, error } = await supabase
     .from('clientes')
@@ -69,6 +102,8 @@ export async function GET(request: NextRequest) {
     const periodoFim = searchParams.get('periodo_fim');
     const produtoId = searchParams.get('produto_id');
     const categoria = searchParams.get('categoria');
+    const severidade = parseSeverity(searchParams.get('severidade'));
+    const recomendacao = parseRecommendationType(searchParams.get('recomendacao'));
     const limite = parseAnalyticsLimit(searchParams.get('limite'));
 
     if (periodoInicio && !isValidDate(periodoInicio)) {
@@ -87,6 +122,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'limite deve ser um numero inteiro entre 1 e 500.' }, { status: 400 });
     }
 
+    if (severidade === undefined) {
+      return NextResponse.json({ error: 'severidade invalida.' }, { status: 400 });
+    }
+
+    if (recomendacao === undefined) {
+      return NextResponse.json({ error: 'recomendacao invalida.' }, { status: 400 });
+    }
+
     const supabase = createAuthenticatedClient(accessToken);
     const { data: { user }, error: userError } = await supabase.auth.getUser(accessToken);
 
@@ -99,28 +142,31 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Mercado nao encontrado para o usuario autenticado.' }, { status: 403 });
     }
 
-    const produtos = await getProductMetricsForClient(supabase, cliente.id, {
+    const metrics = await getProductMetricsForClient(supabase, cliente.id, {
       periodoInicio,
       periodoFim,
       produtoId,
       categoria,
-      limite,
+      limite: 500,
     });
 
+    const recommendations = generateProductRecommendations(metrics)
+      .filter((item) => !severidade || item.severidade === severidade)
+      .filter((item) => !recomendacao || item.recomendacao_principal === recomendacao)
+      .slice(0, limite);
+
     return NextResponse.json({
-      total: produtos.length,
-      filtros: {
-        periodo_inicio: periodoInicio,
-        periodo_fim: periodoFim,
-        produto_id: produtoId,
-        categoria,
-        limite,
+      total: recommendations.length,
+      periodo: {
+        inicio: periodoInicio,
+        fim: periodoFim,
       },
-      produtos,
+      resumo: summarizeProductRecommendations(recommendations),
+      recomendacoes: recommendations,
     });
   } catch (error: unknown) {
-    const message = (error as ErrorWithMessage).message || 'Erro ao calcular indicadores de produtos.';
-    console.error('[Analytics Products Error]', message);
-    return NextResponse.json({ error: 'Erro ao calcular indicadores de produtos.' }, { status: 500 });
+    const message = (error as ErrorWithMessage).message || 'Erro ao gerar recomendacoes.';
+    console.error('[Analytics Recommendations Error]', message);
+    return NextResponse.json({ error: 'Erro ao gerar recomendacoes.' }, { status: 500 });
   }
 }
