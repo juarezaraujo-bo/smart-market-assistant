@@ -31,6 +31,10 @@ test('traduz tendencia para texto de interface', () => {
   assert.equal(getTrendLabel('crescimento'), 'Crescimento');
   assert.equal(getTrendLabel('queda'), 'Queda');
   assert.equal(getTrendLabel('estavel'), 'Estável');
+  assert.equal(getTrendLabel('VENDAS_RETOMADAS'), 'Vendas retomadas');
+  assert.equal(getTrendLabel('SEM_VENDAS_RECENTES'), 'Sem vendas nos últimos períodos');
+  assert.equal(getTrendLabel('SEM_HISTORICO_COMPARATIVO'), 'Sem histórico para comparação');
+  assert.equal(getTrendLabel('HISTORICO_INCOMPLETO'), 'Histórico incompleto');
 });
 
 test('formata moeda em pt-BR', () => {
@@ -39,6 +43,11 @@ test('formata moeda em pt-BR', () => {
 
 test('formata cobertura nula como nao estimavel', () => {
   assert.equal(formatCoverageDays(null), 'Não estimável');
+});
+
+test('formata cobertura arredondada para interface', () => {
+  assert.equal(formatCoverageDays(394.91), 'aproximadamente 395 dias');
+  assert.equal(formatCoverageDays(95.53, true), '≈ 96 dias');
 });
 
 test('formata percentual com duas casas', () => {

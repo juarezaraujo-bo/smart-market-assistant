@@ -10,6 +10,19 @@ export type RecommendationConfig = {
   crescimentoRelevantePercentual: number;
   capitalAltoPercentualProdutos: number;
   vendaAltaPercentualProdutos: number;
+  simulacaoPromocao: PromotionSimulationConfig;
+};
+
+export type PromotionScenarioConfig = {
+  descontoPercentual: number;
+  aumentoVelocidadePercentual: number;
+};
+
+export type PromotionSimulationConfig = {
+  margemMinimaPercentual: number;
+  descontoMaximoPercentual: number;
+  horizontePadraoDias: number;
+  cenarios: PromotionScenarioConfig[];
 };
 
 export const defaultRecommendationConfig: RecommendationConfig = {
@@ -24,4 +37,16 @@ export const defaultRecommendationConfig: RecommendationConfig = {
   crescimentoRelevantePercentual: 20,
   capitalAltoPercentualProdutos: 20,
   vendaAltaPercentualProdutos: 20,
+  simulacaoPromocao: {
+    margemMinimaPercentual: 10,
+    descontoMaximoPercentual: 25,
+    horizontePadraoDias: 30,
+    cenarios: [
+      { descontoPercentual: 5, aumentoVelocidadePercentual: 10 },
+      { descontoPercentual: 10, aumentoVelocidadePercentual: 25 },
+      { descontoPercentual: 15, aumentoVelocidadePercentual: 45 },
+      { descontoPercentual: 20, aumentoVelocidadePercentual: 70 },
+      { descontoPercentual: 25, aumentoVelocidadePercentual: 100 },
+    ],
+  },
 };

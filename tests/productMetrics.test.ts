@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   calculatePeriodoDays,
+  calculateDetailedSalesTrend,
   calculateProductMetrics,
   calculateSalesTrend,
   parseAnalyticsLimit,
@@ -190,6 +191,44 @@ test('tendencia com empate dentro da tolerancia permanece estavel', () => {
   ], { tolerancePercent: 10 });
 
   assert.equal(trend, 'estavel');
+});
+
+test('periodo anterior zero e atual positivo gera vendas retomadas', () => {
+  const trend = calculateDetailedSalesTrend([
+    makeRecord({ periodo_inicio: '2026-05-01', periodo_fim: '2026-05-31', quantidade_vendida: 0 }),
+    makeRecord({ periodo_inicio: '2026-06-01', periodo_fim: '2026-06-30', quantidade_vendida: 8 }),
+  ]);
+
+  assert.equal(trend, 'VENDAS_RETOMADAS');
+});
+
+test('dois periodos sem venda geram sem vendas recentes', () => {
+  const trend = calculateDetailedSalesTrend([
+    makeRecord({ periodo_inicio: '2026-05-01', periodo_fim: '2026-05-31', quantidade_vendida: 0 }),
+    makeRecord({ periodo_inicio: '2026-06-01', periodo_fim: '2026-06-30', quantidade_vendida: 0 }),
+  ]);
+
+  assert.equal(trend, 'SEM_VENDAS_RECENTES');
+});
+
+test('um unico periodo gera sem historico para comparacao', () => {
+  const trend = calculateDetailedSalesTrend([
+    makeRecord({ periodo_inicio: '2026-06-01', periodo_fim: '2026-06-30', quantidade_vendida: 8 }),
+  ]);
+
+  assert.equal(trend, 'SEM_HISTORICO_COMPARATIVO');
+});
+
+test('meses ausentes geram historico incompleto', () => {
+  const trend = calculateDetailedSalesTrend([
+    makeRecord({ periodo_inicio: '2026-04-01', periodo_fim: '2026-04-30', quantidade_vendida: 8 }),
+    makeRecord({ periodo_inicio: '2026-06-01', periodo_fim: '2026-06-30', quantidade_vendida: 10 }),
+  ], {
+    expectedPeriodCount: 3,
+    missingPeriods: ['05/2026'],
+  });
+
+  assert.equal(trend, 'HISTORICO_INCOMPLETO');
 });
 
 test('arredonda indicadores de exibicao de forma consistente', () => {

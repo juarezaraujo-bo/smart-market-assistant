@@ -1,5 +1,9 @@
 import type { ProductMetrics } from './productMetrics';
 import {
+  simulatePromotion,
+  type PromotionSimulation,
+} from './promotionSimulator';
+import {
   defaultRecommendationConfig,
   type RecommendationConfig,
 } from './recommendationConfig';
@@ -74,6 +78,7 @@ export type ProductRecommendation = {
   acao_recomendada: RecommendedAction;
   justificativas: RecommendationReason[];
   metricas_relevantes: Record<string, number | string | null>;
+  simulacao_promocao?: PromotionSimulation | null;
 };
 
 type RecommendationContext = {
@@ -341,16 +346,28 @@ function buildImpacto(metric: ProductMetrics) {
 
 function buildRelevantMetrics(metric: ProductMetrics) {
   return {
+    periodo_inicio: metric.periodo_inicio,
+    periodo_fim: metric.periodo_fim,
+    dias_periodo: metric.dias_periodo,
     quantidade_vendida: metric.quantidade_vendida,
     estoque_atual: metric.estoque_atual,
+    preco_custo: metric.preco_custo,
+    preco_venda: metric.preco_venda,
     venda_media_dia: metric.venda_media_dia,
     cobertura_dias: metric.cobertura_dias,
     capital_estoque: metric.capital_estoque,
+    margem_unitaria: metric.margem_unitaria,
     margem_percentual: metric.margem_percentual,
     dias_sem_venda: metric.dias_sem_venda,
     dias_ate_vencimento: metric.dias_ate_vencimento,
     variacao_vendas_percentual: metric.variacao_vendas_percentual,
     tendencia_vendas: metric.tendencia_vendas,
+    tendencia_vendas_detalhada: metric.tendencia_vendas_detalhada ?? metric.tendencia_vendas,
+    periodos_disponiveis: metric.periodos_disponiveis ?? null,
+    periodos_esperados: metric.periodos_esperados ?? null,
+    periodos_ausentes: metric.periodos_ausentes?.join(', ') ?? '',
+    confiabilidade_nivel: metric.confiabilidade?.nivel ?? null,
+    confiabilidade_mensagem: metric.confiabilidade?.mensagem ?? '',
   };
 }
 
@@ -364,6 +381,7 @@ export function generateProductRecommendation(
   const justificativas: RecommendationReason[] = [];
   const recomendacaoPrincipal = chooseMainRecommendation(metric, flags);
   const score = scoreRecommendation(metric, flags, justificativas);
+  const acaoRecomendada = chooseAction(recomendacaoPrincipal, flags);
 
   return {
     produto_id: metric.produto_id,
@@ -374,9 +392,18 @@ export function generateProductRecommendation(
     recomendacao_principal: recomendacaoPrincipal,
     diagnostico: buildDiagnostico(recomendacaoPrincipal, metric),
     impacto: buildImpacto(metric),
-    acao_recomendada: chooseAction(recomendacaoPrincipal, flags),
+    acao_recomendada: acaoRecomendada,
     justificativas,
     metricas_relevantes: buildRelevantMetrics(metric),
+    simulacao_promocao: acaoRecomendada === 'CRIAR_PROMOCAO'
+      ? simulatePromotion({
+        preco_venda_atual: metric.preco_venda,
+        preco_custo: metric.preco_custo,
+        estoque_atual: metric.estoque_atual,
+        venda_media_dia: metric.venda_media_dia,
+        dias_ate_vencimento: metric.dias_ate_vencimento,
+      }, config.simulacaoPromocao)
+      : null,
   };
 }
 

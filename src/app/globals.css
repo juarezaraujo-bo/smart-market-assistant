@@ -58,6 +58,8 @@ h1, h2, h3 {
 .dashboard-shell {
   display: flex;
   min-width: 0;
+  width: 100%;
+  max-width: 100vw;
 }
 
 .sidebar {
@@ -177,6 +179,7 @@ h1, h2, h3 {
   min-height: 100vh;
   width: calc(100% - 240px);
   min-width: 0;
+  box-sizing: border-box;
 }
 
 .mobile-icon-button {
@@ -406,7 +409,7 @@ select:focus {
 
 .decision-filters {
   display: grid;
-  grid-template-columns: repeat(6, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
   align-items: end;
   margin-bottom: 24px;
@@ -427,6 +430,12 @@ select:focus {
   gap: 8px;
   color: var(--text-muted);
   font-size: 12px;
+  min-width: 0;
+}
+
+.decision-filters .btn {
+  width: 100%;
+  min-width: 180px;
 }
 
 .decision-search span {
@@ -459,6 +468,29 @@ select:focus {
   font-weight: 600;
 }
 
+.decision-summary-title strong,
+.decision-summary-title span,
+.decision-summary-title small {
+  display: block;
+}
+
+.decision-summary-title strong {
+  color: var(--text-main);
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.decision-summary-title span {
+  line-height: 1.45;
+}
+
+.decision-summary-title small {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
 .decision-summary-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -485,6 +517,7 @@ select:focus {
 
 .decision-section {
   margin-bottom: 34px;
+  min-width: 0;
 }
 
 .decision-section-heading {
@@ -501,16 +534,90 @@ select:focus {
 
 .decision-action-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 16px;
+  align-items: start;
+  width: 100%;
+}
+
+.decision-action-grid > .decision-action-card {
+  grid-column: span 2;
+  align-self: start;
+}
+
+.decision-action-grid > .decision-action-card:nth-child(4):nth-last-child(2),
+.decision-action-grid > .decision-action-card:nth-child(5):last-child {
+  grid-column: span 3;
+}
+
+.decision-priority-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.decision-priority-item {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-main);
+  padding: 14px;
+  min-width: 0;
+  height: 100%;
+}
+
+.decision-priority-rank {
+  display: inline-flex;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.decision-priority-item strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.decision-priority-item > span:not(.decision-priority-rank),
+.decision-priority-item small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.decision-priority-item > span:not(.decision-priority-rank) {
+  color: var(--primary);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.decision-priority-item small {
+  margin-bottom: 8px;
+}
+
+.decision-priority-item em {
+  color: var(--text-main);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  margin-top: auto;
 }
 
 .decision-action-card,
 .decision-mobile-card {
+  display: flex;
+  flex-direction: column;
   text-align: left;
   color: var(--text-main);
   cursor: pointer;
   width: 100%;
+  min-width: 0;
+  height: auto;
 }
 
 .decision-card-top,
@@ -549,10 +656,84 @@ select:focus {
   font-size: 12px;
 }
 
-@media (min-width: 1600px) {
-  .decision-action-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
+.decision-promo-compact {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: var(--radius);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.decision-promo-compact span {
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.decision-promo-compact strong {
+  color: var(--text-main);
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.decision-promo-section {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.decision-analysis-summary,
+.decision-promo-insight,
+.decision-price-rationale {
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius);
+  background: rgba(59, 130, 246, 0.08);
+  padding: 12px;
+}
+
+.decision-analysis-summary p,
+.decision-promo-insight,
+.decision-price-rationale {
+  color: var(--text-main);
+  line-height: 1.55;
+}
+
+.decision-sales-story .decision-story-block,
+.decision-simulation-story .decision-story-block {
+  margin-bottom: 12px;
+}
+
+.decision-story-block h4 {
+  margin: 0 0 10px;
+  color: var(--text-main);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.decision-story-grid,
+.decision-simulation-story {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.decision-simulation-story {
+  margin-top: 14px;
+}
+
+.decision-financial-toggle {
+  margin: 12px 0;
+}
+
+.decision-promo-unavailable {
+  color: var(--text-muted);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  font-size: 13px;
 }
 
 .decision-badge {
@@ -574,6 +755,9 @@ select:focus {
 
 .decision-table-wrap {
   padding: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   overflow-x: auto;
 }
 
@@ -673,6 +857,17 @@ select:focus {
   list-style: none;
 }
 
+.decision-reason-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.decision-reason-groups h4 {
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: var(--text-main);
+}
+
 .decision-reasons li {
   display: flex;
   gap: 8px;
@@ -709,21 +904,43 @@ select:focus {
   font-size: 14px;
 }
 
-@media (max-width: 980px) {
-  .decision-filters,
-  .decision-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.decision-metric-line.promo-risk strong { color: #fca5a5; }
+.decision-metric-line.promo-gain strong { color: #86efac; }
+.decision-metric-line.promo-revenue strong { color: #93c5fd; }
+.decision-metric-line.promo-discount strong { color: #fdba74; }
 
+.promo-tone-risk { color: #fca5a5 !important; }
+.promo-tone-gain { color: #86efac !important; }
+.promo-tone-revenue { color: #93c5fd !important; }
+.promo-tone-discount { color: #fdba74 !important; }
+
+@media (max-width: 1199px) {
   .decision-action-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .decision-table-wrap {
-    display: none;
+  .decision-action-grid > .decision-action-card,
+  .decision-action-grid > .decision-action-card:nth-child(4):nth-last-child(2),
+  .decision-action-grid > .decision-action-card:nth-child(5):last-child {
+    grid-column: span 1;
   }
 
-  .decision-mobile-list {
+  .decision-action-grid > .decision-action-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 980px) {
+  .decision-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-story-grid,
+  .decision-simulation-story {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-table-wrap {
     display: block;
   }
 }
@@ -851,17 +1068,17 @@ select:focus {
 
   .decision-filters,
   .decision-summary-grid,
-  .decision-action-grid,
   .decision-detail-grid {
     grid-template-columns: 1fr;
   }
 
   .decision-page {
     max-width: 100%;
+    min-width: 0;
   }
 
   .decision-table {
-    min-width: 0;
+    min-width: 860px;
   }
 
   .decision-modal-backdrop {
@@ -886,7 +1103,37 @@ select:focus {
 
 @media (min-width: 481px) and (max-width: 768px) {
   .stats-grid,
-  .decision-summary-grid {
+  .decision-filters,
+  .decision-summary-grid,
+  .decision-action-grid,
+  .decision-priority-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-action-grid > .decision-action-card {
+    grid-column: span 1;
+  }
+
+  .decision-action-grid > .decision-action-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 480px) {
+  .decision-filters,
+  .decision-summary-grid,
+  .decision-action-grid,
+  .decision-priority-list,
+  .decision-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-action-grid > .decision-action-card {
+    grid-column: 1 / -1;
+  }
+
+  .decision-action-grid > .decision-action-card:nth-child(4):nth-last-child(2),
+  .decision-action-grid > .decision-action-card:nth-child(5):last-child {
+    grid-column: 1 / -1;
   }
 }

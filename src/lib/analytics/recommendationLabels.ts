@@ -1,4 +1,4 @@
-import type { TendenciaVendas } from './productMetrics';
+import type { TendenciaVendas, TendenciaVendasDetalhada } from './productMetrics';
 import type {
   RecommendedAction,
   RecommendationSeverity,
@@ -47,6 +47,18 @@ export const trendLabels: Record<TendenciaVendas, string> = {
   dados_insuficientes: 'Dados insuficientes',
 };
 
+export const detailedTrendLabels: Record<TendenciaVendasDetalhada, string> = {
+  ALTA: 'Tendência de alta',
+  QUEDA: 'Tendência de queda',
+  ESTAVEL: 'Vendas estáveis',
+  OSCILANDO: 'Vendas oscilando',
+  VENDAS_RETOMADAS: 'Vendas retomadas',
+  SEM_VENDAS_RECENTES: 'Sem vendas nos últimos períodos',
+  SEM_HISTORICO_COMPARATIVO: 'Sem histórico para comparação',
+  HISTORICO_INCOMPLETO: 'Histórico incompleto',
+  DADOS_INSUFICIENTES: 'Dados insuficientes para calcular tendência',
+};
+
 export function getRecommendationTypeLabel(type: RecommendationType) {
   return recommendationTypeLabels[type] ?? 'Recomendação';
 }
@@ -61,6 +73,7 @@ export function getSeverityLabel(severity: RecommendationSeverity) {
 
 export function getTrendLabel(trend: unknown) {
   if (typeof trend !== 'string' || !trend) return 'Não estimável';
+  if (trend in detailedTrendLabels) return detailedTrendLabels[trend as TendenciaVendasDetalhada];
   return trendLabels[trend as TendenciaVendas] ?? 'Não estimável';
 }
 
@@ -79,8 +92,10 @@ export function formatNumberPtBr(value: number | null | undefined, suffix = '') 
   return `${new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 }).format(value)}${suffix}`;
 }
 
-export function formatCoverageDays(value: number | null | undefined) {
-  return formatNumberPtBr(value, ' dias');
+export function formatCoverageDays(value: number | null | undefined, compact = false) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'Não estimável';
+  const rounded = Math.max(0, Math.round(value));
+  return compact ? `≈ ${rounded} dias` : `aproximadamente ${rounded} dias`;
 }
 
 export type RecommendationListItem = {

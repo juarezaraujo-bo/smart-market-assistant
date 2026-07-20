@@ -1,4 +1,21 @@
 export type TendenciaVendas = 'crescimento' | 'queda' | 'estavel' | 'dados_insuficientes';
+export type TendenciaVendasDetalhada =
+  | 'ALTA'
+  | 'QUEDA'
+  | 'ESTAVEL'
+  | 'OSCILANDO'
+  | 'VENDAS_RETOMADAS'
+  | 'SEM_VENDAS_RECENTES'
+  | 'SEM_HISTORICO_COMPARATIVO'
+  | 'HISTORICO_INCOMPLETO'
+  | 'DADOS_INSUFICIENTES';
+
+export type AnalyticsReliabilityLevel = 'alta' | 'moderada' | 'baixa';
+
+export type AnalyticsReliability = {
+  nivel: AnalyticsReliabilityLevel;
+  mensagem: string;
+};
 
 export type AnalyticsObservationCode =
   | 'SEM_VENDAS_PARA_COBERTURA'
@@ -54,14 +71,23 @@ export type ProductMetrics = {
   dias_ate_vencimento: number | null;
   variacao_vendas_percentual: number | null;
   tendencia_vendas: TendenciaVendas;
+  tendencia_vendas_detalhada?: TendenciaVendasDetalhada;
+  periodos_disponiveis?: number;
+  periodos_esperados?: number;
+  periodos_ausentes?: string[];
+  confiabilidade?: AnalyticsReliability;
   observacoes: AnalyticsObservation[];
 };
 
 export type ProductMetricsOptions = {
   tolerancePercent?: number;
+  trendRecords?: ProductHistoryRecord[];
+  expectedPeriodCount?: number;
+  missingPeriods?: string[];
 };
 
 const DEFAULT_TOLERANCE_PERCENT = 10;
+const DEFAULT_OSCILLATION_TOLERANCE_PERCENT = 20;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function createObservation(codigo: AnalyticsObservationCode, mensagem: string, campo?: string): AnalyticsObservation {
@@ -140,6 +166,74 @@ function compareSales(previous: number, current: number, tolerancePercent: numbe
   return 'estavel';
 }
 
+function isRelevantMove(previous: number, current: number, tolerancePercent: number) {
+  if (previous === current) return 'flat';
+  if (previous === 0) return current > 0 ? 'up' : 'flat';
+  const changePercent = ((current - previous) / previous) * 100;
+  if (!Number.isFinite(changePercent)) return 'flat';
+  if (changePercent > tolerancePercent) return 'up';
+  if (changePercent < -tolerancePercent) return 'down';
+  return 'flat';
+}
+
+export function calculateDetailedSalesTrend(
+  records: ProductHistoryRecord[],
+  options: ProductMetricsOptions = {}
+): TendenciaVendasDetalhada {
+  const sorted = sortHistory(records);
+  const validRecords = sorted.filter((record) => calculatePeriodoDays(record.periodo_inicio, record.periodo_fim) !== null);
+  const expectedPeriodCount = options.expectedPeriodCount ?? validRecords.length;
+  const missingPeriods = options.missingPeriods ?? [];
+
+  if (validRecords.length === 0) return 'DADOS_INSUFICIENTES';
+  if (missingPeriods.length > 0 || expectedPeriodCount > validRecords.length) return 'HISTORICO_INCOMPLETO';
+  if (validRecords.length === 1) return 'SEM_HISTORICO_COMPARATIVO';
+
+  const sales = validRecords.map((record) => sanitizeNumber(record.quantidade_vendida));
+  const last = sales[sales.length - 1];
+  const previous = sales[sales.length - 2];
+
+  if (previous === 0 && last > 0) return 'VENDAS_RETOMADAS';
+  if (sales.length >= 2 && sales.slice(-2).every((value) => value === 0)) return 'SEM_VENDAS_RECENTES';
+
+  const tolerancePercent = options.tolerancePercent ?? DEFAULT_TOLERANCE_PERCENT;
+  const moves = sales.slice(1).map((value, index) => isRelevantMove(sales[index], value, DEFAULT_OSCILLATION_TOLERANCE_PERCENT));
+  if (moves.includes('up') && moves.includes('down')) return 'OSCILANDO';
+
+  const trendBase = validRecords.length >= 3 ? validRecords.slice(-3) : validRecords;
+  const first = sanitizeNumber(trendBase[0].quantidade_vendida);
+  const current = sanitizeNumber(trendBase[trendBase.length - 1].quantidade_vendida);
+  const overallMove = compareSales(first, current, tolerancePercent);
+
+  if (overallMove === 'crescimento') return 'ALTA';
+  if (overallMove === 'queda') return 'QUEDA';
+  if (overallMove === 'estavel') return 'ESTAVEL';
+  return 'DADOS_INSUFICIENTES';
+}
+
+function calculateReliability(
+  records: ProductHistoryRecord[],
+  totalSales: number,
+  expectedPeriodCount: number,
+  missingPeriods: string[]
+): AnalyticsReliability {
+  const validCount = records.filter((record) => calculatePeriodoDays(record.periodo_inicio, record.periodo_fim) !== null).length;
+
+  if (validCount >= 6 && missingPeriods.length === 0 && totalSales > 0) {
+    return { nivel: 'alta', mensagem: `Histórico contínuo de ${validCount} meses.` };
+  }
+
+  if (validCount >= 3 && missingPeriods.length === 0) {
+    return { nivel: 'moderada', mensagem: totalSales > 0 ? `Histórico de ${validCount} meses.` : 'Histórico de 3 meses ou mais, mas com vendas pouco frequentes.' };
+  }
+
+  if (expectedPeriodCount > validCount || missingPeriods.length > 0) {
+    return { nivel: 'baixa', mensagem: 'Poucos períodos ou histórico incompleto.' };
+  }
+
+  return { nivel: 'baixa', mensagem: 'Poucos períodos para comparação.' };
+}
+
 export function calculateSalesTrend(
   records: ProductHistoryRecord[],
   options: ProductMetricsOptions = {}
@@ -167,6 +261,7 @@ export function calculateSalesTrend(
   return 'estavel';
 }
 
+
 export function calculateProductMetrics(
   records: ProductHistoryRecord[],
   options: ProductMetricsOptions = {}
@@ -178,6 +273,9 @@ export function calculateProductMetrics(
   const sorted = sortHistory(records);
   const current = sorted[sorted.length - 1];
   const previous = sorted.length > 1 ? sorted[sorted.length - 2] : null;
+  const trendRecords = sortHistory(options.trendRecords ?? sorted);
+  const expectedPeriodCount = options.expectedPeriodCount ?? trendRecords.length;
+  const missingPeriods = options.missingPeriods ?? [];
   const observacoes: AnalyticsObservation[] = [];
   const quantidadeVendida = sanitizeNumber(current.quantidade_vendida);
   const estoqueAtual = sanitizeNumber(current.estoque_atual);
@@ -185,6 +283,11 @@ export function calculateProductMetrics(
   const precoVenda = sanitizeNullableNumber(current.preco_venda);
   const diasPeriodo = calculatePeriodoDays(current.periodo_inicio, current.periodo_fim);
   const vendaMediaDia = diasPeriodo && diasPeriodo > 0 ? quantidadeVendida / diasPeriodo : null;
+  const tendenciaDetalhada = calculateDetailedSalesTrend(trendRecords, {
+    ...options,
+    expectedPeriodCount,
+    missingPeriods,
+  });
   const tendenciaVendas = calculateSalesTrend(sorted, options);
 
   if (diasPeriodo === null) {
@@ -328,6 +431,11 @@ export function calculateProductMetrics(
     variacao_vendas_percentual:
       variacaoVendasPercentual === null ? null : roundMetric(variacaoVendasPercentual, 2),
     tendencia_vendas: tendenciaVendas,
+    tendencia_vendas_detalhada: tendenciaDetalhada,
+    periodos_disponiveis: trendRecords.length,
+    periodos_esperados: expectedPeriodCount,
+    periodos_ausentes: missingPeriods,
+    confiabilidade: calculateReliability(trendRecords, quantidadeVendida, expectedPeriodCount, missingPeriods),
     observacoes,
   };
 }

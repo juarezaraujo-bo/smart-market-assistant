@@ -102,6 +102,7 @@ export async function GET(request: NextRequest) {
     const periodoFim = searchParams.get('periodo_fim');
     const produtoId = searchParams.get('produto_id');
     const categoria = searchParams.get('categoria');
+    const historicoCompleto = searchParams.get('historico') === 'completo';
     const severidade = parseSeverity(searchParams.get('severidade'));
     const recomendacao = parseRecommendationType(searchParams.get('recomendacao'));
     const limite = parseAnalyticsLimit(searchParams.get('limite'));
@@ -143,11 +144,12 @@ export async function GET(request: NextRequest) {
     }
 
     const metrics = await getProductMetricsForClient(supabase, cliente.id, {
-      periodoInicio,
-      periodoFim,
+      periodoInicio: historicoCompleto ? null : periodoInicio,
+      periodoFim: historicoCompleto ? null : periodoFim,
       produtoId,
       categoria,
       limite: 500,
+      historicoCompleto,
     });
 
     const recommendations = generateProductRecommendations(metrics)
@@ -158,8 +160,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       total: recommendations.length,
       periodo: {
-        inicio: periodoInicio,
-        fim: periodoFim,
+        inicio: historicoCompleto ? null : periodoInicio,
+        fim: historicoCompleto ? null : periodoFim,
+        historico_completo: historicoCompleto,
       },
       resumo: summarizeProductRecommendations(recommendations),
       recomendacoes: recommendations,

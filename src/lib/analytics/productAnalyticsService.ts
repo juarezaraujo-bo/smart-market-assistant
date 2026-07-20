@@ -30,6 +30,7 @@ export type ProductAnalyticsFilters = {
   produtoId: string | null;
   categoria: string | null;
   limite: number;
+  historicoCompleto?: boolean;
 };
 
 function getProdutoJoin(row: ProdutoPeriodoRow) {
@@ -88,6 +89,77 @@ function matchesTargetPeriod(record: ProductHistoryRecord, periodoInicio: string
   return true;
 }
 
+function parseDateParts(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return { year, month, day };
+}
+
+function monthKey(value: string) {
+  return value.slice(0, 7);
+}
+
+function formatMonthKey(value: string) {
+  const [year, month] = value.split('-');
+  return `${month}/${year}`;
+}
+
+function expectedMonthKeys(periodoInicio: string, periodoFim: string) {
+  const start = parseDateParts(periodoInicio);
+  const end = parseDateParts(periodoFim);
+  if (!start || !end) return [];
+
+  const keys: string[] = [];
+  let year = start.year;
+  let month = start.month;
+
+  while (year < end.year || (year === end.year && month <= end.month)) {
+    keys.push(`${year}-${String(month).padStart(2, '0')}`);
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+
+  return keys;
+}
+
+function buildSeriesMetadata(records: ProductHistoryRecord[], periodoInicio: string, periodoFim: string) {
+  const expectedKeys = expectedMonthKeys(periodoInicio, periodoFim);
+  const availableKeys = new Set(records.map((record) => monthKey(record.periodo_inicio)));
+  const missingPeriods = expectedKeys
+    .filter((key) => !availableKeys.has(key))
+    .map(formatMonthKey);
+
+  return {
+    expectedPeriodCount: expectedKeys.length || records.length,
+    missingPeriods,
+  };
+}
+
+function consolidateProductHistory(
+  records: ProductHistoryRecord[],
+  periodoInicio?: string | null,
+  periodoFim?: string | null
+) {
+  const sorted = sortProductHistory(records);
+  const first = sorted[0];
+  const latest = sorted[sorted.length - 1];
+
+  return {
+    ...latest,
+    periodo_inicio: periodoInicio || first.periodo_inicio,
+    periodo_fim: periodoFim || latest.periodo_fim,
+    quantidade_vendida: sorted.reduce((total, record) => total + record.quantidade_vendida, 0),
+    estoque_atual: latest.estoque_atual,
+    preco_custo: latest.preco_custo,
+    preco_venda: latest.preco_venda,
+    ultima_venda: latest.ultima_venda,
+    data_validade: latest.data_validade,
+  };
+}
+
 export function sortProductMetrics(metrics: ProductMetrics[]) {
   return [...metrics].sort((a, b) => {
     const capitalCompare = (b.capital_estoque ?? 0) - (a.capital_estoque ?? 0);
@@ -139,6 +211,19 @@ export function buildProductMetricsResponse(records: ProductHistoryRecord[], fil
 
   for (const productRecords of grouped.values()) {
     const sorted = sortProductHistory(productRecords);
+    if (filters.historicoCompleto) {
+      const consolidated = consolidateProductHistory(sorted);
+      if (filters.categoria && consolidated.categoria !== filters.categoria) continue;
+
+      const metadata = buildSeriesMetadata(sorted, consolidated.periodo_inicio, consolidated.periodo_fim);
+      metrics.push(calculateProductMetrics([consolidated], {
+        trendRecords: sorted,
+        expectedPeriodCount: metadata.expectedPeriodCount,
+        missingPeriods: metadata.missingPeriods,
+      }));
+      continue;
+    }
+
     const targetRecords = sorted.filter((record) =>
       matchesTargetPeriod(record, filters.periodoInicio, filters.periodoFim)
     );
@@ -146,6 +231,23 @@ export function buildProductMetricsResponse(records: ProductHistoryRecord[], fil
 
     if (!target) continue;
     if (filters.categoria && target.categoria !== filters.categoria) continue;
+
+    if (targetRecords.length > 1 || (filters.periodoInicio && filters.periodoFim && (
+      filters.periodoInicio !== target.periodo_inicio ||
+      filters.periodoFim !== target.periodo_fim
+    ))) {
+      const consolidated = consolidateProductHistory(targetRecords, filters.periodoInicio, filters.periodoFim);
+      const previous = sorted
+        .filter((record) => record.periodo_fim < consolidated.periodo_inicio)
+        .at(-1);
+      const metadata = buildSeriesMetadata(targetRecords, consolidated.periodo_inicio, consolidated.periodo_fim);
+      metrics.push(calculateProductMetrics(previous ? [previous, consolidated] : [consolidated], {
+        trendRecords: targetRecords,
+        expectedPeriodCount: metadata.expectedPeriodCount,
+        missingPeriods: metadata.missingPeriods,
+      }));
+      continue;
+    }
 
     const historyUntilTarget = sorted.filter((record) => {
       if (record.periodo_fim < target.periodo_fim) return true;

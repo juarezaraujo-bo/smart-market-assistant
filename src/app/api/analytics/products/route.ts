@@ -69,6 +69,7 @@ export async function GET(request: NextRequest) {
     const periodoFim = searchParams.get('periodo_fim');
     const produtoId = searchParams.get('produto_id');
     const categoria = searchParams.get('categoria');
+    const historicoCompleto = searchParams.get('historico') === 'completo';
     const limite = parseAnalyticsLimit(searchParams.get('limite'));
 
     if (periodoInicio && !isValidDate(periodoInicio)) {
@@ -100,18 +101,20 @@ export async function GET(request: NextRequest) {
     }
 
     const produtos = await getProductMetricsForClient(supabase, cliente.id, {
-      periodoInicio,
-      periodoFim,
+      periodoInicio: historicoCompleto ? null : periodoInicio,
+      periodoFim: historicoCompleto ? null : periodoFim,
       produtoId,
       categoria,
       limite,
+      historicoCompleto,
     });
 
     return NextResponse.json({
       total: produtos.length,
       filtros: {
-        periodo_inicio: periodoInicio,
-        periodo_fim: periodoFim,
+        periodo_inicio: historicoCompleto ? null : periodoInicio,
+        periodo_fim: historicoCompleto ? null : periodoFim,
+        historico_completo: historicoCompleto,
         produto_id: produtoId,
         categoria,
         limite,
