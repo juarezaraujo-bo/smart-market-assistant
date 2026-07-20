@@ -99,6 +99,22 @@ export async function sendTelegramMessage(message: string, chatId?: string) {
   return payload;
 }
 
+export async function sendTelegramChatAction(chatId: string, action = 'typing') {
+  const { botToken, chatId: targetChatId } = requireTelegramConfig(chatId);
+  const url = `https://api.telegram.org/bot${botToken}/sendChatAction`;
+
+  await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: targetChatId,
+      action,
+    }),
+  });
+}
+
 async function reserveAlertForTelegram(client: SupabaseClient, alertId: string) {
   const { data, error } = await client
     .from('alertas')

@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
-import { sendTelegramMessage } from '@/lib/telegramService';
+import { sendTelegramChatAction, sendTelegramMessage } from '@/lib/telegramService';
+import { runSmartMarketAssistant } from '@/lib/assistant/assistantOrchestrator';
+import { consultarRecomendacoes, consultarResumoDecisoes } from '@/lib/assistant/assistantTools';
+import { splitTelegramMessage } from '@/lib/assistant/telegramMessageFormatter';
+import type { AssistantConnection } from '@/lib/assistant/assistantTypes';
 
 type TelegramUpdate = {
+  update_id?: number;
   message?: {
     chat?: {
       id?: string | number;
@@ -15,26 +21,12 @@ type TelegramUpdate = {
   };
 };
 
-type ProdutoInfo = {
-  nome: string | null;
-  preco_custo?: number | string | null;
-  estoque?: Array<{
-    quantidade_atual: number | string | null;
-  }> | null;
+type SupabaseError = {
+  code?: string;
+  message?: string;
 };
 
-type AlertRecord = {
-  id: string;
-  tipo: string | null;
-  mensagem: string;
-  whatsapp_status: string | null;
-  created_at: string;
-  produtos?: ProdutoInfo | ProdutoInfo[] | null;
-};
-
-type UploadRecord = {
-  created_at: string;
-};
+const PROCESSING_RECOVERY_MINUTES = 15;
 
 const HELP_MESSAGE = [
   'Olá! Eu sou o bot do SmartMarket.',
@@ -46,18 +38,11 @@ const HELP_MESSAGE = [
   '/ruptura',
   '/parados',
   '/ajuda',
-].join('\n');
-
-const UNKNOWN_MESSAGE = [
-  'Não entendi sua solicitação.',
   '',
-  'Você pode usar:',
-  '/resumo',
-  '/criticos',
-  '/vencimentos',
-  '/ruptura',
-  '/parados',
-  '/ajuda',
+  'Também pode perguntar em linguagem natural, como:',
+  'O que preciso repor?',
+  'Onde tenho mais dinheiro parado?',
+  'Como está a cerveja?',
 ].join('\n');
 
 function normalizeText(text: string) {
@@ -102,192 +87,217 @@ function resolveCommand(text: string) {
   return null;
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+function validateWebhookSecret(request: NextRequest) {
+  const configured = process.env.TELEGRAM_WEBHOOK_SECRET;
 
-function getProduto(alert: AlertRecord) {
-  if (Array.isArray(alert.produtos)) return alert.produtos[0] || null;
-  return alert.produtos || null;
-}
-
-function getEstoqueAtual(produto: ProdutoInfo | null) {
-  const estoque = produto?.estoque?.[0]?.quantidade_atual;
-  if (estoque === undefined || estoque === null) return null;
-  const value = Number(estoque);
-  return Number.isFinite(value) ? value : null;
-}
-
-function getValorFinanceiro(produto: ProdutoInfo | null) {
-  const estoque = getEstoqueAtual(produto);
-  const precoCusto = produto?.preco_custo === undefined || produto?.preco_custo === null
-    ? null
-    : Number(produto.preco_custo);
-
-  if (estoque === null || precoCusto === null || !Number.isFinite(precoCusto)) return null;
-  return estoque * precoCusto;
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return 'não encontrada';
-  return new Date(value).toLocaleString('pt-BR');
-}
-
-function formatAlertList(title: string, alerts: AlertRecord[]) {
-  if (alerts.length === 0) {
-    return `${title}\n\nNenhum alerta encontrado.`;
+  if (!configured) {
+    return process.env.NODE_ENV !== 'production' && process.env.TELEGRAM_WEBHOOK_ALLOW_UNSAFE_LOCAL === 'true';
   }
 
-  const lines = alerts.flatMap((alert, index) => {
-    const produto = getProduto(alert);
-    const produtoNome = produto?.nome || 'Produto não identificado';
-    const estoque = getEstoqueAtual(produto);
-    const valor = getValorFinanceiro(produto);
-    const item = [
-      `${index + 1}. <b>${escapeHtml(produtoNome)}</b>`,
-      escapeHtml(alert.mensagem),
-    ];
-
-    if (estoque !== null) item.push(`Estoque atual: ${estoque} un`);
-    if (valor !== null) item.push(`Valor em risco: R$ ${valor.toFixed(2)}`);
-
-    return [...item, ''];
-  });
-
-  return [title, '', ...lines].join('\n').trim();
+  return request.headers.get('x-telegram-bot-api-secret-token') === configured;
 }
 
-async function getResumoMessage() {
-  const supabase = getSupabaseAdminClient();
+function isDuplicateKeyError(error: SupabaseError | null) {
+  return error?.code === '23505';
+}
 
-  const [
-    produtosResult,
-    criticosResult,
-    vencimentosResult,
-    rupturaResult,
-    paradosResult,
-    uploadResult,
-  ] = await Promise.all([
-    supabase.from('produtos').select('id', { count: 'exact', head: true }),
-    supabase.from('alertas').select('id', { count: 'exact', head: true }).eq('lido', false).eq('whatsapp_status', 'pending'),
-    supabase.from('alertas').select('id', { count: 'exact', head: true }).eq('lido', false).eq('tipo', 'vencimento'),
-    supabase.from('alertas').select('id', { count: 'exact', head: true }).eq('lido', false).eq('tipo', 'ruptura'),
-    supabase.from('alertas').select('id', { count: 'exact', head: true }).eq('lido', false).eq('tipo', 'estoque_parado'),
-    supabase.from('uploads_history').select('created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
-  ]);
+async function reserveUpdate(supabase: SupabaseClient, updateId: number, chatId: string) {
+  const { error: insertError } = await supabase
+    .from('telegram_processed_updates')
+    .insert({
+      update_id: updateId,
+      chat_id: chatId,
+      status: 'processing',
+      error_code: null,
+    });
 
-  const errors = [produtosResult, criticosResult, vencimentosResult, rupturaResult, paradosResult, uploadResult]
-    .map((result) => result.error)
-    .filter(Boolean);
+  if (!insertError) return true;
+  if (!isDuplicateKeyError(insertError)) throw new Error(insertError.message);
 
-  if (errors.length > 0) {
-    throw new Error(errors[0]?.message || 'Erro ao carregar resumo.');
+  const recoveryCutoff = new Date(Date.now() - PROCESSING_RECOVERY_MINUTES * 60 * 1000).toISOString();
+  const { data: recovered, error: recoveryError } = await supabase
+    .from('telegram_processed_updates')
+    .update({
+      status: 'processing',
+      error_code: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    })
+    .eq('update_id', updateId)
+    .eq('status', 'processing')
+    .lt('created_at', recoveryCutoff)
+    .select('update_id')
+    .maybeSingle();
+
+  if (recoveryError) throw new Error(recoveryError.message);
+  return Boolean(recovered);
+}
+
+async function completeUpdate(supabase: SupabaseClient, updateId: number, status: 'completed' | 'failed', errorCode?: string) {
+  await supabase
+    .from('telegram_processed_updates')
+    .update({
+      status,
+      completed_at: new Date().toISOString(),
+      error_code: errorCode || null,
+    })
+    .eq('update_id', updateId);
+}
+
+async function resolveTelegramConnection(supabase: SupabaseClient, chatId: string) {
+  const { data, error } = await supabase
+    .from('telegram_connections')
+    .select('cliente_id, chat_id, telegram_username, telegram_first_name, ativo')
+    .eq('chat_id', chatId)
+    .eq('ativo', true)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data as AssistantConnection | null;
+}
+
+function formatRecommendationList(title: string, payload: Awaited<ReturnType<typeof consultarRecomendacoes>>) {
+  if (payload.recomendacoes.length === 0) {
+    return `${title}\n\nNenhum item encontrado.`;
   }
 
-  const lastUpload = uploadResult.data as UploadRecord | null;
+  const lines = payload.recomendacoes.map((item, index) => [
+    `${index + 1}. ${item.nome || 'Produto não identificado'}`,
+    item.diagnostico,
+    `Ação: ${item.acao_recomendada}`,
+  ].join('\n'));
 
   return [
-    '📊 <b>Resumo SmartMarket</b>',
+    title,
     '',
-    `Produtos monitorados: ${produtosResult.count || 0}`,
-    `Alertas críticos: ${criticosResult.count || 0}`,
-    `Vencimentos próximos: ${vencimentosResult.count || 0}`,
-    `Risco de ruptura: ${rupturaResult.count || 0}`,
-    `Produtos parados: ${paradosResult.count || 0}`,
+    ...lines,
     '',
-    `Última importação: ${formatDateTime(lastUpload?.created_at)}`,
-  ].join('\n');
+    payload.periodo ? `Período analisado: ${payload.periodo.periodo_inicio} a ${payload.periodo.periodo_fim}` : '',
+  ].join('\n').trim();
 }
 
-async function getAlertsByCommand(command: string) {
-  const supabase = getSupabaseAdminClient();
-  let title = 'Alertas SmartMarket';
-  let query = supabase
-    .from('alertas')
-    .select(`
-      id,
-      tipo,
-      mensagem,
-      whatsapp_status,
-      created_at,
-      produtos:produto_id (
-        nome,
-        preco_custo,
-        estoque (
-          quantidade_atual
-        )
-      )
-    `)
-    .eq('lido', false)
-    .order('created_at', { ascending: false })
-    .limit(10);
+async function getResponseForCommand(command: string | null, clienteId: string, supabase: SupabaseClient) {
+  const context = { clienteId, supabase };
+
+  if (command === '/start' || command === '/ajuda') return HELP_MESSAGE;
+  if (command === '/resumo') {
+    const payload = await consultarResumoDecisoes(context, {});
+    return [
+      'Resumo SmartMarket',
+      '',
+      `Produtos analisados: ${payload.produtos_analisados}`,
+      `Críticas: ${payload.resumo.criticas}`,
+      `Altas: ${payload.resumo.altas}`,
+      `Médias: ${payload.resumo.medias}`,
+      `Capital em risco: R$ ${payload.resumo.capital_em_risco.toFixed(2)}`,
+      '',
+      payload.periodo ? `Período analisado: ${payload.periodo.periodo_inicio} a ${payload.periodo.periodo_fim}` : 'Período analisado: não encontrado.',
+    ].join('\n');
+  }
 
   if (command === '/criticos') {
-    title = '🚨 Alertas críticos';
-    query = query.eq('whatsapp_status', 'pending');
-  } else if (command === '/vencimentos') {
-    title = '⏰ Vencimentos próximos';
-    query = query.eq('tipo', 'vencimento');
-  } else if (command === '/ruptura') {
-    title = '📉 Risco de ruptura';
-    query = query.eq('tipo', 'ruptura');
-  } else if (command === '/parados') {
-    title = '📦 Produtos parados';
-    query = query.eq('tipo', 'estoque_parado');
+    return formatRecommendationList('Prioridades críticas', await consultarRecomendacoes(context, {
+      severidade: 'critica',
+      limite: 10,
+    }));
   }
 
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
+  if (command === '/vencimentos') {
+    return formatRecommendationList('Vencimentos e validade', await consultarRecomendacoes(context, {
+      recomendacao: 'RISCO_VENCIMENTO',
+      limite: 10,
+    }));
+  }
 
-  return formatAlertList(title, (data || []) as unknown as AlertRecord[]);
+  if (command === '/ruptura') {
+    return formatRecommendationList('Risco de ruptura e reposição', await consultarRecomendacoes(context, {
+      recomendacao: 'RISCO_RUPTURA',
+      limite: 10,
+    }));
+  }
+
+  if (command === '/parados') {
+    return formatRecommendationList('Produtos parados ou com excesso', await consultarRecomendacoes(context, {
+      recomendacao: 'CAPITAL_PARADO',
+      limite: 10,
+    }));
+  }
+
+  return null;
 }
 
-async function getResponseForCommand(command: string | null) {
-  if (command === '/start' || command === '/ajuda') return HELP_MESSAGE;
-  if (command === '/resumo') return getResumoMessage();
-  if (command === '/criticos' || command === '/vencimentos' || command === '/ruptura' || command === '/parados') {
-    return getAlertsByCommand(command);
+async function sendLongTelegramMessage(message: string, chatId: string) {
+  for (const part of splitTelegramMessage(message)) {
+    await sendTelegramMessage(part, chatId);
   }
-
-  return UNKNOWN_MESSAGE;
 }
 
 export async function POST(request: NextRequest) {
+  let updateId: number | null = null;
+  let chatIdText: string | null = null;
+  let supabase: SupabaseClient | null = null;
+
   try {
+    if (!validateWebhookSecret(request)) {
+      return NextResponse.json({ ok: true });
+    }
+
     const update = (await request.json()) as TelegramUpdate;
+    updateId = typeof update.update_id === 'number' ? update.update_id : null;
     const chatId = update.message?.chat?.id;
     const text = update.message?.text || '';
-    const firstName = update.message?.from?.first_name || '';
-    const username = update.message?.from?.username || '';
+    chatIdText = chatId === undefined || chatId === null ? null : String(chatId);
 
-    if (!chatId || !text) {
+    if (!chatIdText || !text || updateId === null) {
       return NextResponse.json({ ok: true });
     }
 
-    const chatIdText = String(chatId);
-    const authorizedChatId = process.env.TELEGRAM_CHAT_ID;
+    supabase = getSupabaseAdminClient();
 
-    if (chatIdText !== String(authorizedChatId || '')) {
-      console.warn('[Telegram Webhook] Unauthorized chat', {
-        chatId: chatIdText,
-        firstName,
-        username,
-      });
-      await sendTelegramMessage('Acesso não autorizado.', chatIdText);
+    const reserved = await reserveUpdate(supabase, updateId, chatIdText);
+    if (!reserved) {
       return NextResponse.json({ ok: true });
     }
+
+    const connection = await resolveTelegramConnection(supabase, chatIdText);
+    if (!connection) {
+      await sendTelegramMessage('Este Telegram ainda não está vinculado a um mercado no SmartMarket.', chatIdText);
+      await completeUpdate(supabase, updateId, 'completed');
+      return NextResponse.json({ ok: true });
+    }
+
+    await sendTelegramChatAction(chatIdText, 'typing').catch(() => undefined);
 
     const command = resolveCommand(text);
-    const responseMessage = await getResponseForCommand(command);
-    await sendTelegramMessage(responseMessage, chatIdText);
+    const commandMessage = await getResponseForCommand(command, connection.cliente_id, supabase);
+    const responseMessage = commandMessage || (await runSmartMarketAssistant({
+      clienteId: connection.cliente_id,
+      chatId: chatIdText,
+      userText: text,
+      supabase,
+    })).message;
+
+    await sendLongTelegramMessage(responseMessage, chatIdText);
+    await completeUpdate(supabase, updateId, 'completed');
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error('[Telegram Webhook] Erro ao processar atualização:', error);
+    const errorCode = error instanceof Error ? error.message.slice(0, 80) : 'unknown_error';
+    console.error('[Telegram Webhook] Erro ao processar atualização:', {
+      update_id: updateId,
+      chat_id: chatIdText,
+      error_code: errorCode,
+    });
+
+    if (supabase && updateId !== null) {
+      await completeUpdate(supabase, updateId, 'failed', errorCode).catch(() => undefined);
+    }
+
+    if (chatIdText) {
+      await sendTelegramMessage('Não consegui consultar os dados agora. Tente novamente em alguns instantes.', chatIdText)
+        .catch(() => undefined);
+    }
+
     return NextResponse.json({ ok: true });
   }
 }
