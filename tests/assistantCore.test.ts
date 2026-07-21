@@ -11,7 +11,10 @@ import {
   compararProdutoPeriodos,
   listarPeriodos,
 } from '../src/lib/assistant/assistantTools';
-import { runSmartMarketAssistant } from '../src/lib/assistant/assistantOrchestrator';
+import {
+  extractFallbackProductSearchTerm,
+  runSmartMarketAssistant,
+} from '../src/lib/assistant/assistantOrchestrator';
 import { splitTelegramMessage } from '../src/lib/assistant/telegramMessageFormatter';
 import { formatFallbackRecommendationsMessage } from '../src/lib/assistant/assistantPresentation';
 import type { ProductRecommendation } from '../src/lib/analytics/productRecommendations';
@@ -160,6 +163,76 @@ const rows = [
     data_validade: '2026-12-01',
     produtos: { nome: 'Molho Especial', categoria: 'Mercearia' },
   },
+  {
+    id: 'pp-8',
+    cliente_id: 'cliente-1',
+    produto_id: 'cerveja',
+    periodo_inicio: '2026-06-01',
+    periodo_fim: '2026-06-30',
+    quantidade_vendida: 32,
+    estoque_atual: 48,
+    preco_custo: 3.1,
+    preco_venda: 5.99,
+    ultima_venda: '2026-06-29',
+    data_validade: '2026-09-30',
+    produtos: { nome: 'Cerveja Pilsen 350ml', categoria: 'Bebidas' },
+  },
+  {
+    id: 'pp-9',
+    cliente_id: 'cliente-1',
+    produto_id: 'arroz',
+    periodo_inicio: '2026-06-01',
+    periodo_fim: '2026-06-30',
+    quantidade_vendida: 30,
+    estoque_atual: 5,
+    preco_custo: 4.2,
+    preco_venda: 6.99,
+    ultima_venda: '2026-06-28',
+    data_validade: '2026-12-31',
+    produtos: { nome: 'Arroz 1kg', categoria: 'Mercearia' },
+  },
+  {
+    id: 'pp-10',
+    cliente_id: 'cliente-1',
+    produto_id: 'refrigerante-cola',
+    periodo_inicio: '2026-06-01',
+    periodo_fim: '2026-06-30',
+    quantidade_vendida: 24,
+    estoque_atual: 18,
+    preco_custo: 4.5,
+    preco_venda: 7.99,
+    ultima_venda: '2026-06-27',
+    data_validade: '2026-11-30',
+    produtos: { nome: 'Refrigerante Cola 2L', categoria: 'Bebidas' },
+  },
+  {
+    id: 'pp-11',
+    cliente_id: 'cliente-1',
+    produto_id: 'refrigerante-laranja',
+    periodo_inicio: '2026-06-01',
+    periodo_fim: '2026-06-30',
+    quantidade_vendida: 16,
+    estoque_atual: 20,
+    preco_custo: 4.3,
+    preco_venda: 7.49,
+    ultima_venda: '2026-06-26',
+    data_validade: '2026-11-30',
+    produtos: { nome: 'Refrigerante Laranja 2L', categoria: 'Bebidas' },
+  },
+  {
+    id: 'pp-12',
+    cliente_id: 'cliente-2',
+    produto_id: 'cerveja-outro-cliente',
+    periodo_inicio: '2026-06-01',
+    periodo_fim: '2026-06-30',
+    quantidade_vendida: 999,
+    estoque_atual: 999,
+    preco_custo: 1,
+    preco_venda: 2,
+    ultima_venda: '2026-06-30',
+    data_validade: '2026-12-31',
+    produtos: { nome: 'Cerveja Outro Mercado', categoria: 'Bebidas' },
+  },
 ];
 
 function context() {
@@ -169,10 +242,46 @@ function context() {
   };
 }
 
+async function runFallbackQuestion(userText: string) {
+  const previousAiFlag = process.env.SMARTMARKET_AI_ENABLED;
+  const previousWarn = console.warn;
+  process.env.SMARTMARKET_AI_ENABLED = 'false';
+  console.warn = () => undefined;
+
+  try {
+    return await runSmartMarketAssistant({
+      clienteId: 'cliente-1',
+      chatId: 'validation:test',
+      userText,
+      marketName: 'Mercado da TIA',
+      supabase: createSupabaseMock(rows) as never,
+    });
+  } finally {
+    console.warn = previousWarn;
+    if (previousAiFlag === undefined) {
+      delete process.env.SMARTMARKET_AI_ENABLED;
+    } else {
+      process.env.SMARTMARKET_AI_ENABLED = previousAiFlag;
+    }
+  }
+}
+
 test('schemas das ferramentas nao aceitam cliente_id do modelo', () => {
   for (const tool of assistantOpenAITools) {
     assert.equal(Object.hasOwn(tool.parameters.properties, 'cliente_id'), false);
   }
+});
+
+test('nenhuma ferramenta de escrita e criada para o assistente', () => {
+  const names = assistantOpenAITools.map((tool) => tool.name);
+  assert.deepEqual(names, [
+    'listar_periodos',
+    'consultar_resumo_decisoes',
+    'consultar_recomendacoes',
+    'consultar_produto',
+    'comparar_produto_periodos',
+  ]);
+  assert.equal(names.some((name) => /inserir|atualizar|deletar|excluir|salvar|enviar/.test(name)), false);
 });
 
 test('schema rejeita limite acima de 20', () => {
@@ -222,6 +331,70 @@ test('consultar_produto nao escolhe arbitrariamente multiplas correspondencias',
 test('consultar_produto retorna not_found para produto inexistente', async () => {
   const result = await consultarProduto(context(), { produto: 'produto inexistente' });
   assert.equal(result.status, 'not_found');
+});
+
+test('fallback identifica consultas naturais de produto', () => {
+  assert.equal(extractFallbackProductSearchTerm('Como está a cerveja?'), 'cerveja');
+  assert.equal(extractFallbackProductSearchTerm('Como estão as cervejas?'), 'cerveja');
+  assert.equal(extractFallbackProductSearchTerm('Analise o arroz'), 'arroz');
+  assert.equal(extractFallbackProductSearchTerm('Situação do refrigerante'), 'refrigerante');
+  assert.equal(extractFallbackProductSearchTerm('Me fale sobre a cerveja'), 'cerveja');
+  assert.equal(extractFallbackProductSearchTerm('Tenho problema com arroz?'), 'arroz');
+});
+
+test('fallback responde produto unico sem codigos internos ou nomes de ferramentas', async () => {
+  const result = await runFallbackQuestion('Como está a cerveja?');
+
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.toolCalls.length, 0);
+  assert.equal(result.message.includes('Análise de produto'), true);
+  assert.equal(result.message.includes('Período: Junho de 2026'), true);
+  assert.equal(result.message.includes('Cerveja Pilsen 350ml'), true);
+  assert.equal(result.message.includes('Categoria: Bebidas'), true);
+  assert.equal(result.message.includes('Estoque atual:'), true);
+  assert.equal(result.message.includes('Vendas no período:'), true);
+  assert.equal(result.message.includes('Ação sugerida:'), true);
+  assert.equal(result.message.includes('Situação:'), true);
+  assert.equal(result.message.includes('Prioridade:'), true);
+  assert.match(result.message, /^Situação: .+$/m);
+  assert.match(result.message, /^Prioridade: .+ (Crítica|Alta|Média|Baixa|Informativa)$/m);
+  assert.equal(result.message.includes('Baixa - Reposição prioritária'), false);
+  assert.equal(result.message.includes('CRIAR_PROMOCAO'), false);
+  assert.equal(result.message.includes('SUSPENDER_REPOSICAO'), false);
+  assert.equal(result.message.includes('consultar_produto'), false);
+  assert.equal(result.message.includes('cliente_id'), false);
+  assert.equal(result.message.includes('Cerveja Outro Mercado'), false);
+  assert.equal(result.message.includes('NaN'), false);
+  assert.equal(result.message.includes('Infinity'), false);
+  assert.equal(result.message.includes('undefined'), false);
+  assert.equal(result.message.includes('null'), false);
+});
+
+test('fallback consulta arroz por frase natural', async () => {
+  const result = await runFallbackQuestion('Tenho problema com arroz?');
+
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.message.includes('Arroz 1kg'), true);
+  assert.equal(result.message.includes('Ação sugerida:'), true);
+});
+
+test('fallback lista multiplos produtos sem escolher silenciosamente', async () => {
+  const result = await runFallbackQuestion('Como estão os refrigerantes?');
+
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.message.includes('Encontrei 2 produtos relacionados'), true);
+  assert.equal(result.message.includes('Refrigerante Cola 2L'), true);
+  assert.equal(result.message.includes('Refrigerante Laranja 2L'), true);
+  assert.equal(result.message.includes('Me diga o nome mais específico'), true);
+});
+
+test('fallback informa produto inexistente sem inventar dados', async () => {
+  const result = await runFallbackQuestion('Como está a banana?');
+
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.message.includes('Não encontrei produtos relacionados a "banana"'), true);
+  assert.equal(result.message.includes('Estoque atual:'), false);
+  assert.equal(result.message.includes('Ação sugerida:'), false);
 });
 
 test('comparar_produto_periodos usa periodo anterior quando nao informado', async () => {

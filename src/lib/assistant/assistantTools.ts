@@ -118,6 +118,7 @@ function sanitizeRecommendation(recommendation: ProductRecommendation) {
     acao_recomendada: recommendation.acao_recomendada,
     justificativas: recommendation.justificativas,
     metricas_relevantes: recommendation.metricas_relevantes,
+    simulacao_promocao: recommendation.simulacao_promocao ?? null,
   };
 }
 
@@ -185,11 +186,51 @@ export async function consultarRecomendacoes(context: AssistantToolContext, inpu
   };
 }
 
-function findMatchingRecommendations(recommendations: ProductRecommendation[], productName: string) {
+function singularizeSearchTerm(value: string) {
+  if (value.length > 4 && value.endsWith('es')) return value.slice(0, -2);
+  if (value.length > 3 && value.endsWith('s')) return value.slice(0, -1);
+  return value;
+}
+
+function searchVariants(productName: string) {
   const normalizedProduct = normalizeText(productName);
-  return recommendations.filter((recommendation) =>
-    normalizeText(recommendation.nome).includes(normalizedProduct)
-  );
+  const singular = singularizeSearchTerm(normalizedProduct);
+  return Array.from(new Set([normalizedProduct, singular].filter(Boolean)));
+}
+
+function getMatchRank(recommendation: ProductRecommendation, productName: string) {
+  const variants = searchVariants(productName);
+  const name = normalizeText(recommendation.nome);
+  const category = normalizeText(recommendation.categoria);
+
+  for (const variant of variants) {
+    if (name === variant) return 1;
+  }
+  for (const variant of variants) {
+    if (name.startsWith(variant)) return 2;
+  }
+  for (const variant of variants) {
+    if (name.includes(variant)) return 3;
+  }
+  for (const variant of variants) {
+    if (category === variant || category.includes(variant)) return 4;
+  }
+
+  return null;
+}
+
+function findMatchingRecommendations(recommendations: ProductRecommendation[], productName: string) {
+  return recommendations
+    .map((recommendation) => ({
+      recommendation,
+      rank: getMatchRank(recommendation, productName),
+    }))
+    .filter((item): item is { recommendation: ProductRecommendation; rank: number } => item.rank !== null)
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return b.recommendation.prioridade_score - a.recommendation.prioridade_score;
+    })
+    .map((item) => item.recommendation);
 }
 
 export async function consultarProduto(context: AssistantToolContext, input: unknown): Promise<ProductLookupResult> {
@@ -205,7 +246,8 @@ export async function consultarProduto(context: AssistantToolContext, input: unk
   if (matches.length === 0) {
     return {
       status: 'not_found',
-      message: 'Nenhum produto encontrado com esse nome no periodo consultado.',
+      termo: args.produto,
+      message: `Nao encontrei produtos relacionados a "${args.produto}" no periodo analisado.`,
     };
   }
 
@@ -216,7 +258,12 @@ export async function consultarProduto(context: AssistantToolContext, input: unk
         produto_id: item.produto_id,
         nome: item.nome,
         categoria: item.categoria,
+        severidade: item.severidade,
+        recomendacao_principal: item.recomendacao_principal,
+        acao_recomendada: item.acao_recomendada,
+        metricas_relevantes: item.metricas_relevantes,
       })),
+      termo: args.produto,
       message: 'Encontrei mais de um produto parecido. Peca ao usuario para especificar qual produto deseja.',
     };
   }

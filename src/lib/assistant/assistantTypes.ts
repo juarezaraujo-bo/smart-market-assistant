@@ -75,12 +75,22 @@ export type ProductLookupResult =
     }
   | {
       status: 'multiple_matches';
-      matches: Array<{ produto_id: string; nome: string | null; categoria: string | null }>;
+      matches: Array<{
+        produto_id: string;
+        nome: string | null;
+        categoria: string | null;
+        severidade?: ProductRecommendation['severidade'];
+        recomendacao_principal?: ProductRecommendation['recomendacao_principal'];
+        acao_recomendada?: ProductRecommendation['acao_recomendada'];
+        metricas_relevantes?: ProductRecommendation['metricas_relevantes'];
+      }>;
       message: string;
+      termo?: string;
     }
   | {
       status: 'not_found';
       message: string;
+      termo?: string;
     };
 
 export type AssistantConnection = {

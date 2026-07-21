@@ -11,10 +11,11 @@ import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { SMARTMARKET_ASSISTANT_INSTRUCTIONS } from './assistantInstructions';
 import {
   formatFallbackRecommendationsMessage,
+  formatFallbackProductLookupMessage,
   type RecommendationIntent,
 } from './assistantPresentation';
 import { assistantOpenAITools } from './assistantToolSchemas';
-import { executeAssistantTool, listarPeriodos } from './assistantTools';
+import { consultarProduto, executeAssistantTool, listarPeriodos } from './assistantTools';
 import {
   createOpenAIClient,
   getAssistantModel,
@@ -171,6 +172,45 @@ function fallbackIntent(text: string): RecommendationIntent | null {
   return null;
 }
 
+function singularizeFallbackTerm(value: string) {
+  if (value.length > 4 && value.endsWith('es')) return value.slice(0, -2);
+  if (value.length > 3 && value.endsWith('s')) return value.slice(0, -1);
+  return value;
+}
+
+function cleanProductSearchTerm(value: string) {
+  const normalized = normalizeText(value)
+    .replace(/[?!.,;:()[\]{}"']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(umas|uns|uma|um|as|os|a|o)\s+/, '');
+
+  return singularizeFallbackTerm(normalized).trim();
+}
+
+export function extractFallbackProductSearchTerm(text: string) {
+  const normalized = normalizeText(text)
+    .replace(/[?!.,;:()[\]{}"']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const patterns = [
+    /^como esta(?:o)?\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
+    /^situacao\s+(?:(?:das|dos|da|do|de)\s+)?(.+)$/,
+    /^analise\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
+    /^me fale sobre\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
+    /^tenho problema com\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const term = cleanProductSearchTerm(match?.[1] || '');
+    if (term) return term;
+  }
+
+  return null;
+}
+
 async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string, fallback?: string) {
   if (fallback) return fallback;
 
@@ -189,6 +229,26 @@ async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string,
 }
 
 async function deterministicFallback(context: AssistantContext): Promise<AssistantRunResult | null> {
+  const productSearchTerm = extractFallbackProductSearchTerm(context.userText);
+  if (productSearchTerm) {
+    const supabase = context.supabase || getSupabaseAdminClient();
+    const periods = await listarPeriodos({ clienteId: context.clienteId, supabase });
+    const latest = periods.periodo_mais_recente;
+    const result = await consultarProduto({ clienteId: context.clienteId, supabase }, {
+      produto: productSearchTerm,
+      periodo_inicio: latest?.periodo_inicio,
+      periodo_fim: latest?.periodo_fim,
+    });
+
+    return {
+      message: limitAssistantAnswer(formatFallbackProductLookupMessage(result)),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: latest,
+    };
+  }
+
   const intent = fallbackIntent(context.userText);
   if (!intent) return null;
 
