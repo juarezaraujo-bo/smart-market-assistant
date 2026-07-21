@@ -10,6 +10,7 @@ import {
   getTrendLabel,
 } from '@/lib/analytics/recommendationLabels';
 import type { AssistantPeriod, ProductLookupResult } from './assistantTypes';
+import type { AssistantIntent, SalesRankingDirection } from './router/assistantIntents';
 
 export type RecommendationIntent = 'prioridades' | 'repor' | 'capital' | 'vencimento' | 'promocao';
 
@@ -138,6 +139,14 @@ function formatRecommendationItem(recommendation: ProductRecommendation, index: 
   ].join('\n');
 }
 
+type RecommendationListInput = {
+  title: string;
+  period: AssistantPeriod | null;
+  recommendations: ProductRecommendation[];
+  emptyMessage: string;
+  mode?: 'default' | 'capital' | 'promotion' | 'sales';
+};
+
 function metricNumber(value: number | string | null | undefined) {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
@@ -200,6 +209,153 @@ function formatPromotionSimulation(recommendation: ProductRecommendation) {
     `Ganho econômico incremental estimado: ${formatCurrencyPtBr(scenario.ganho_economico_incremental)}`,
     'Projeção baseada no histórico recente. O resultado real pode variar.',
   ].join('\n');
+}
+
+function formatListItem(recommendation: ProductRecommendation, index: number, mode: RecommendationListInput['mode'] = 'default') {
+  const metrics = recommendation.metricas_relevantes;
+  const base = [
+    `${index + 1}. ${recommendation.nome || 'Produto não identificado'}`,
+    `Situação: ${getRecommendationTypeLabel(recommendation.recomendacao_principal)}`,
+    `Ação: ${getRecommendedActionLabel(recommendation.acao_recomendada)}`,
+  ];
+
+  if (mode === 'capital') {
+    base.push(`Capital em estoque: ${formatCurrencyPtBr(metricNumber(metrics.capital_estoque))}`);
+    base.push(`Estoque: ${formatUnits(metrics.estoque_atual)}`);
+  } else if (mode === 'promotion') {
+    const simulation = recommendation.simulacao_promocao;
+    const scenario = simulation?.melhor_cenario;
+    if (simulation && scenario) {
+      base.push(`Preço: ${formatCurrencyPtBr(simulation.preco_venda_atual)} → ${formatCurrencyPtBr(scenario.preco_promocional)}`);
+      base.push(`Desconto estimado: ${formatPercentPtBr(scenario.desconto_percentual)}`);
+      base.push(`Impacto potencial: ${formatCurrencyPtBr(scenario.ganho_economico_incremental)}`);
+    }
+  } else if (mode === 'sales') {
+    base.push(`Vendas: ${formatUnits(metrics.quantidade_vendida)}`);
+    base.push(`Estoque: ${formatUnits(metrics.estoque_atual)}`);
+  } else {
+    const indicators = compactIndicators(recommendation);
+    if (indicators) base.push(indicators);
+  }
+
+  return base.join('\n');
+}
+
+export function formatRecommendationListResponse(input: RecommendationListInput) {
+  const items = input.recommendations.slice(0, 10).map((item, index) => formatListItem(item, index, input.mode));
+
+  return [
+    input.title,
+    `Período: ${formatAssistantPeriod(input.period)}`,
+    '',
+    items.length > 0 ? `Encontrei ${items.length} item(ns) relevantes.` : input.emptyMessage,
+    '',
+    ...items.flatMap((item) => [item, '']),
+  ].join('\n').trim();
+}
+
+export function formatExecutiveSummaryResponse(input: {
+  marketName: string;
+  period: AssistantPeriod | null;
+  totalProducts: number;
+  recommendations: ProductRecommendation[];
+}) {
+  const critical = input.recommendations.filter((item) => item.severidade === 'critica').length;
+  const high = input.recommendations.filter((item) => item.severidade === 'alta').length;
+  const capital = input.recommendations.reduce((sum, item) => sum + (metricNumber(item.metricas_relevantes.capital_estoque) || 0), 0);
+  const rupture = input.recommendations.filter((item) => item.recomendacao_principal === 'RISCO_RUPTURA' || item.recomendacao_principal === 'REPOSICAO_PRIORITARIA').length;
+  const expiration = input.recommendations.filter((item) => item.recomendacao_principal === 'RISCO_VENCIMENTO' || item.recomendacao_principal === 'PRODUTO_VENCIDO').length;
+  const actions = input.recommendations.slice(0, 3).map((item, index) =>
+    `${index + 1}. ${item.nome || 'Produto não identificado'}: ${getRecommendedActionLabel(item.acao_recomendada)}`
+  );
+
+  return [
+    `📊 Resumo do ${input.marketName}`,
+    `Período: ${formatAssistantPeriod(input.period)}`,
+    '',
+    `Produtos analisados: ${input.totalProducts}`,
+    `Prioridades críticas: ${critical}`,
+    `Prioridades altas: ${high}`,
+    `Capital em estoque monitorado: ${formatCurrencyPtBr(capital)}`,
+    `Reposição/ruptura: ${rupture}`,
+    `Vencimentos: ${expiration}`,
+    '',
+    'Principais ações:',
+    ...actions,
+  ].join('\n').trim();
+}
+
+export function formatHelpResponse() {
+  return [
+    'Posso responder consultas operacionais do SmartMarket usando os dados reais do painel.',
+    '',
+    'Perguntas disponíveis:',
+    '• Quais são as maiores prioridades deste mês?',
+    '• Como está a cerveja?',
+    '• Como estão as bebidas?',
+    '• Onde tenho mais dinheiro parado?',
+    '• O que preciso repor?',
+    '• O que vence primeiro?',
+    '• Quais produtos estão sem vender?',
+    '• Qual promoção vale mais a pena?',
+    '• Qual produto vende mais?',
+    '• Como está meu mercado?',
+  ].join('\n');
+}
+
+export function formatUnknownResponse() {
+  return [
+    'Não entendi sua solicitação.',
+    '',
+    'Você pode perguntar, por exemplo:',
+    '• Como está a cerveja?',
+    '• O que preciso repor?',
+    '• Onde tenho mais dinheiro parado?',
+    '• /ajuda',
+  ].join('\n');
+}
+
+export function formatPeriodComparisonResponse(input: {
+  productTerm?: string;
+  current: ProductLookupResult;
+  previous: ProductLookupResult;
+  currentPeriod: AssistantPeriod | null;
+  previousPeriod: AssistantPeriod | null;
+}) {
+  if (!input.productTerm) return 'Preciso saber qual produto ou análise você deseja comparar.';
+  if (input.current.status !== 'found' || input.previous.status !== 'found') {
+    return `Não encontrei dados suficientes para comparar "${input.productTerm}" com o período anterior.`;
+  }
+
+  const currentMetrics = input.current.produto.metricas_relevantes;
+  const previousMetrics = input.previous.produto.metricas_relevantes;
+
+  return [
+    `📊 Comparação de produto`,
+    `${input.current.produto.nome || input.productTerm}`,
+    '',
+    `Atual: ${formatAssistantPeriod(input.currentPeriod)}`,
+    `Vendas: ${formatUnits(currentMetrics.quantidade_vendida)}`,
+    `Estoque: ${formatUnits(currentMetrics.estoque_atual)}`,
+    `Situação: ${getRecommendationTypeLabel(input.current.produto.recomendacao_principal)}`,
+    '',
+    `Anterior: ${formatAssistantPeriod(input.previousPeriod)}`,
+    `Vendas: ${formatUnits(previousMetrics.quantidade_vendida)}`,
+    `Estoque: ${formatUnits(previousMetrics.estoque_atual)}`,
+    `Situação: ${getRecommendationTypeLabel(input.previous.produto.recomendacao_principal)}`,
+  ].join('\n');
+}
+
+export function getListTitle(intent: AssistantIntent, category?: string, salesDirection?: SalesRankingDirection) {
+  const suffix = category ? ` em ${category}` : '';
+  if (intent === 'category_analysis') return `📦 Análise da categoria ${category || ''}`.trim();
+  if (intent === 'idle_capital') return `💰 Capital em estoque${suffix}`;
+  if (intent === 'replenishment') return `🛒 Produtos para repor${suffix}`;
+  if (intent === 'expiration') return `⏳ Vencimentos${suffix}`;
+  if (intent === 'stagnant_products') return `📦 Produtos sem venda${suffix}`;
+  if (intent === 'promotions') return `🏷️ Promoções sugeridas${suffix}`;
+  if (intent === 'sales_ranking') return salesDirection === 'least' ? `📉 Produtos que vendem menos${suffix}` : `📈 Produtos que vendem mais${suffix}`;
+  return `📊 Prioridades${suffix}`;
 }
 
 export function formatFallbackProductLookupMessage(result: ProductLookupResult) {

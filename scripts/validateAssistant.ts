@@ -19,6 +19,11 @@ async function main() {
   const email = requiredEnv('SMARTMARKET_VALIDATE_EMAIL');
   const password = requiredEnv('SMARTMARKET_VALIDATE_PASSWORD');
   const question = process.env.SMARTMARKET_VALIDATE_QUESTION || 'Quais sao as maiores prioridades deste mes?';
+  const questions = (process.env.SMARTMARKET_VALIDATE_QUESTIONS || '')
+    .split('||')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const validationQuestions = questions.length > 0 ? questions : [question];
   const conversationKey = process.env.SMARTMARKET_VALIDATE_CONVERSATION_KEY || 'validation-script';
 
   const supabase = createClient(supabaseUrl, anonKey, {
@@ -55,24 +60,29 @@ async function main() {
     },
   });
 
-  const startedAt = Date.now();
-  const result = await runSmartMarketAssistant({
-    clienteId: (cliente as Cliente).id,
-    chatId: `validation:${conversationKey}`,
-    userText: question,
-    supabase: adminSupabase,
-  });
-
-  console.log('Pergunta:', question);
   console.log('Mercado:', (cliente as Cliente).nome_mercado);
-  console.log('Modelo:', result.model || 'fallback');
-  console.log('Fallback:', result.usedFallback);
-  console.log('Ferramentas:', result.toolCalls.map((call) => call.name).join(', ') || 'nenhuma');
-  console.log('Chamadas:', result.toolCalls.length);
-  console.log('Duracao ms:', Date.now() - startedAt);
-  if (result.usage) console.log('Tokens:', JSON.stringify(result.usage));
   console.log('');
-  console.log(result.message);
+
+  for (const currentQuestion of validationQuestions) {
+    const startedAt = Date.now();
+    const result = await runSmartMarketAssistant({
+      clienteId: (cliente as Cliente).id,
+      chatId: `validation:${conversationKey}`,
+      userText: currentQuestion,
+      supabase: adminSupabase,
+    });
+
+    console.log('Pergunta:', currentQuestion);
+    console.log('Modelo:', result.model || 'fallback');
+    console.log('Fallback:', result.usedFallback);
+    console.log('Ferramentas:', result.toolCalls.map((call) => call.name).join(', ') || 'nenhuma');
+    console.log('Chamadas:', result.toolCalls.length);
+    console.log('Duracao ms:', Date.now() - startedAt);
+    if (result.usage) console.log('Tokens:', JSON.stringify(result.usage));
+    console.log('');
+    console.log(result.message);
+    console.log('\n---\n');
+  }
 }
 
 main().catch((error: unknown) => {

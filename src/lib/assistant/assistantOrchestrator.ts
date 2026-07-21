@@ -5,17 +5,25 @@ import type {
   ResponseInputItem,
   Tool,
 } from 'openai/resources/responses/responses';
-import { generateProductRecommendations } from '@/lib/analytics/productRecommendations';
+import { generateProductRecommendations, type ProductRecommendation } from '@/lib/analytics/productRecommendations';
 import { getProductMetricsForClient } from '@/lib/analytics/productAnalyticsService';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { SMARTMARKET_ASSISTANT_INSTRUCTIONS } from './assistantInstructions';
 import {
+  formatExecutiveSummaryResponse,
   formatFallbackRecommendationsMessage,
   formatFallbackProductLookupMessage,
-  type RecommendationIntent,
+  formatHelpResponse,
+  formatPeriodComparisonResponse,
+  formatRecommendationListResponse,
+  formatUnknownResponse,
+  getListTitle,
 } from './assistantPresentation';
 import { assistantOpenAITools } from './assistantToolSchemas';
-import { consultarProduto, executeAssistantTool, listarPeriodos } from './assistantTools';
+import { compararProdutoPeriodos, consultarProduto, executeAssistantTool, listarPeriodos } from './assistantTools';
+import { routeAssistantIntent } from './router/intentRouter';
+import { normalizeIntentText } from './router/intentNormalizer';
+import { extractProductTerm } from './router/intentExtractor';
 import {
   createOpenAIClient,
   getAssistantModel,
@@ -47,12 +55,8 @@ type ClientNameRow = {
   nome_mercado: string | null;
 };
 
-function normalizeText(value: string) {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
+export function extractFallbackProductSearchTerm(text: string) {
+  return extractProductTerm(text) || null;
 }
 
 function truncateStoredMessage(value: string) {
@@ -162,55 +166,6 @@ function buildInput(userText: string, recentMessages: AssistantMessage[]): Respo
   ];
 }
 
-function fallbackIntent(text: string): RecommendationIntent | null {
-  const normalized = normalizeText(text);
-  if (['prioridade', 'prioridades', 'este mes'].some((term) => normalized.includes(term))) return 'prioridades';
-  if (['repor', 'reposicao', 'ruptura', 'acabando'].some((term) => normalized.includes(term))) return 'repor';
-  if (['parado', 'parados', 'dinheiro parado', 'capital'].some((term) => normalized.includes(term))) return 'capital';
-  if (['vencimento', 'validade', 'vencer'].some((term) => normalized.includes(term))) return 'vencimento';
-  if (['promocao', 'promocoes', 'combo'].some((term) => normalized.includes(term))) return 'promocao';
-  return null;
-}
-
-function singularizeFallbackTerm(value: string) {
-  if (value.length > 4 && value.endsWith('es')) return value.slice(0, -2);
-  if (value.length > 3 && value.endsWith('s')) return value.slice(0, -1);
-  return value;
-}
-
-function cleanProductSearchTerm(value: string) {
-  const normalized = normalizeText(value)
-    .replace(/[?!.,;:()[\]{}"']/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^(umas|uns|uma|um|as|os|a|o)\s+/, '');
-
-  return singularizeFallbackTerm(normalized).trim();
-}
-
-export function extractFallbackProductSearchTerm(text: string) {
-  const normalized = normalizeText(text)
-    .replace(/[?!.,;:()[\]{}"']/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const patterns = [
-    /^como esta(?:o)?\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
-    /^situacao\s+(?:(?:das|dos|da|do|de)\s+)?(.+)$/,
-    /^analise\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
-    /^me fale sobre\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
-    /^tenho problema com\s+(?:(?:umas|uns|uma|um|as|os|a|o)\s+)?(.+)$/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    const term = cleanProductSearchTerm(match?.[1] || '');
-    if (term) return term;
-  }
-
-  return null;
-}
-
 async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string, fallback?: string) {
   if (fallback) return fallback;
 
@@ -228,14 +183,85 @@ async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string,
   return row?.nome_mercado || 'SmartMarket';
 }
 
+function sameCategory(recommendation: ProductRecommendation, category?: string) {
+  if (!category) return true;
+  const left = normalizeIntentText(recommendation.categoria || '').normalized;
+  const right = normalizeIntentText(category).normalized;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function filterRecommendationsForIntent(
+  recommendations: ProductRecommendation[],
+  intent: ReturnType<typeof routeAssistantIntent>['intent'],
+  category?: string
+) {
+  const filtered = recommendations.filter((item) => sameCategory(item, category));
+
+  if (intent === 'replenishment') {
+    return filtered.filter((item) =>
+      item.recomendacao_principal === 'RISCO_RUPTURA' ||
+      item.recomendacao_principal === 'REPOSICAO_PRIORITARIA'
+    );
+  }
+  if (intent === 'expiration') {
+    return filtered
+      .filter((item) => item.recomendacao_principal === 'RISCO_VENCIMENTO' || item.recomendacao_principal === 'PRODUTO_VENCIDO')
+      .sort((a, b) => Number(a.metricas_relevantes.dias_ate_vencimento ?? 9999) - Number(b.metricas_relevantes.dias_ate_vencimento ?? 9999));
+  }
+  if (intent === 'idle_capital') {
+    return filtered
+      .filter((item) => item.recomendacao_principal === 'CAPITAL_PARADO' || item.recomendacao_principal === 'EXCESSO_ESTOQUE')
+      .sort((a, b) => Number(b.metricas_relevantes.capital_estoque ?? 0) - Number(a.metricas_relevantes.capital_estoque ?? 0));
+  }
+  if (intent === 'stagnant_products') {
+    return filtered
+      .filter((item) => Number(item.metricas_relevantes.quantidade_vendida ?? 0) === 0 || item.recomendacao_principal === 'SEM_VENDAS')
+      .sort((a, b) => Number(b.metricas_relevantes.dias_sem_venda ?? 0) - Number(a.metricas_relevantes.dias_sem_venda ?? 0));
+  }
+  if (intent === 'promotions') {
+    return filtered
+      .filter((item) => item.acao_recomendada === 'CRIAR_PROMOCAO' && item.simulacao_promocao?.melhor_cenario)
+      .sort((a, b) =>
+        Number(b.simulacao_promocao?.melhor_cenario?.ganho_economico_incremental ?? 0) -
+        Number(a.simulacao_promocao?.melhor_cenario?.ganho_economico_incremental ?? 0)
+      );
+  }
+  if (intent === 'sales_ranking') return filtered;
+  if (intent === 'category_analysis') return filtered;
+
+  return filtered;
+}
+
 async function deterministicFallback(context: AssistantContext): Promise<AssistantRunResult | null> {
-  const productSearchTerm = extractFallbackProductSearchTerm(context.userText);
-  if (productSearchTerm) {
-    const supabase = context.supabase || getSupabaseAdminClient();
-    const periods = await listarPeriodos({ clienteId: context.clienteId, supabase });
-    const latest = periods.periodo_mais_recente;
+  const supabase = context.supabase || getSupabaseAdminClient();
+  const route = routeAssistantIntent(context.userText, context.recentMessages || []);
+  if (route.intent === 'unknown') {
+    return {
+      message: limitAssistantAnswer(formatUnknownResponse()),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: null,
+    };
+  }
+  if (route.intent === 'help') {
+    return {
+      message: limitAssistantAnswer(formatHelpResponse()),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: null,
+    };
+  }
+
+  const marketName = await getMarketDisplayName(supabase, context.clienteId, context.marketName);
+  const periods = await listarPeriodos({ clienteId: context.clienteId, supabase });
+  const latest = periods.periodo_mais_recente;
+  const limit = route.entities.limit || 5;
+
+  if (route.intent === 'product_analysis') {
     const result = await consultarProduto({ clienteId: context.clienteId, supabase }, {
-      produto: productSearchTerm,
+      produto: route.entities.productTerm || '',
       periodo_inicio: latest?.periodo_inicio,
       periodo_fim: latest?.periodo_fim,
     });
@@ -249,13 +275,46 @@ async function deterministicFallback(context: AssistantContext): Promise<Assista
     };
   }
 
-  const intent = fallbackIntent(context.userText);
-  if (!intent) return null;
+  if (route.intent === 'period_comparison') {
+    if (!route.entities.productTerm) {
+      return {
+        message: 'Preciso saber qual produto ou análise você deseja comparar.',
+        usedFallback: true,
+        toolCalls: [],
+        model: null,
+        period: latest,
+      };
+    }
 
-  const supabase = context.supabase || getSupabaseAdminClient();
-  const marketName = await getMarketDisplayName(supabase, context.clienteId, context.marketName);
-  const periods = await listarPeriodos({ clienteId: context.clienteId, supabase });
-  const latest = periods.periodo_mais_recente;
+    const comparison = await compararProdutoPeriodos({ clienteId: context.clienteId, supabase }, {
+      produto: route.entities.productTerm,
+    });
+
+    if (comparison.status !== 'ok' || !comparison.atual || !comparison.anterior) {
+      return {
+        message: 'Não encontrei períodos suficientes para comparar.',
+        usedFallback: true,
+        toolCalls: [],
+        model: null,
+        period: latest,
+      };
+    }
+
+    return {
+      message: limitAssistantAnswer(formatPeriodComparisonResponse({
+        productTerm: route.entities.productTerm,
+        current: comparison.atual,
+        previous: comparison.anterior,
+        currentPeriod: comparison.periodo_atual,
+        previousPeriod: comparison.periodo_anterior,
+      })),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: comparison.periodo_atual,
+    };
+  }
+
   const metrics = await getProductMetricsForClient(supabase, context.clienteId, {
     periodoInicio: latest?.periodo_inicio || null,
     periodoFim: latest?.periodo_fim || null,
@@ -264,22 +323,61 @@ async function deterministicFallback(context: AssistantContext): Promise<Assista
     limite: 500,
   });
   const recommendations = generateProductRecommendations(metrics);
-  const filtered = recommendations.filter((item) => {
-    if (intent === 'repor') {
-      return item.recomendacao_principal === 'RISCO_RUPTURA' || item.recomendacao_principal === 'REPOSICAO_PRIORITARIA';
-    }
-    if (intent === 'vencimento') return item.recomendacao_principal === 'RISCO_VENCIMENTO' || item.recomendacao_principal === 'PRODUTO_VENCIDO';
-    if (intent === 'capital') return item.recomendacao_principal === 'CAPITAL_PARADO' || item.recomendacao_principal === 'EXCESSO_ESTOQUE';
-    if (intent === 'promocao') return item.acao_recomendada === 'CRIAR_PROMOCAO' || item.acao_recomendada === 'CRIAR_COMBO';
-    return true;
-  }).slice(0, 5);
+  let filtered = filterRecommendationsForIntent(recommendations, route.intent, route.entities.category);
+
+  if (route.intent === 'sales_ranking') {
+    filtered = [...filtered].sort((a, b) => {
+      const left = Number(a.metricas_relevantes.quantidade_vendida ?? 0);
+      const right = Number(b.metricas_relevantes.quantidade_vendida ?? 0);
+      return route.entities.salesDirection === 'least' ? left - right : right - left;
+    });
+  }
+
+  if (route.intent === 'executive_summary') {
+    return {
+      message: limitAssistantAnswer(formatExecutiveSummaryResponse({
+        marketName,
+        period: latest,
+        totalProducts: metrics.length,
+        recommendations,
+      })),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: latest,
+    };
+  }
+
+  if (route.intent === 'priorities') {
+    return {
+      message: limitAssistantAnswer(formatFallbackRecommendationsMessage({
+        intent: 'prioridades',
+        marketName,
+        period: latest,
+        recommendations: filtered.slice(0, limit),
+      })),
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: latest,
+    };
+  }
+
+  const mode = route.intent === 'idle_capital'
+    ? 'capital'
+    : route.intent === 'promotions'
+      ? 'promotion'
+      : route.intent === 'sales_ranking'
+        ? 'sales'
+        : 'default';
 
   return {
-    message: limitAssistantAnswer(formatFallbackRecommendationsMessage({
-      intent,
-      marketName,
+    message: limitAssistantAnswer(formatRecommendationListResponse({
+      title: getListTitle(route.intent, route.entities.category, route.entities.salesDirection),
       period: latest,
-      recommendations: filtered,
+      recommendations: filtered.slice(0, limit),
+      emptyMessage: 'Não encontrei produtos para este filtro no período analisado.',
+      mode,
     })),
     usedFallback: true,
     toolCalls: [],
