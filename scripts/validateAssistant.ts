@@ -79,6 +79,24 @@ async function main() {
     console.log('Chamadas:', result.toolCalls.length);
     console.log('Duracao ms:', Date.now() - startedAt);
     if (result.usage) console.log('Tokens:', JSON.stringify(result.usage));
+    if (result.aiTelemetry) {
+      console.log('AI telemetry:', JSON.stringify({
+        provider: result.aiTelemetry.provider || 'none',
+        model: result.aiTelemetry.model || result.model || 'fallback',
+        gateMode: result.aiTelemetry.gateDecision?.mode,
+        gateReason: result.aiTelemetry.gateDecision?.reason,
+        estimatedTokens: result.aiTelemetry.estimatedTokens,
+        estimatedCost: result.aiTelemetry.estimatedCost
+          ? {
+            estimatedTotalCostUsd: result.aiTelemetry.estimatedCost.estimatedTotalCostUsd,
+            pricingSource: result.aiTelemetry.estimatedCost.pricingSource,
+          }
+          : undefined,
+        fallbackUsed: result.aiTelemetry.fallbackUsed,
+        validationPassed: result.aiTelemetry.validationPassed,
+        failureReason: result.aiTelemetry.failureReason,
+      }));
+    }
     console.log('');
     console.log(result.message);
     console.log('\n---\n');

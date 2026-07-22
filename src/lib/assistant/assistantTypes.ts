@@ -4,6 +4,8 @@ import type {
   RecommendationSeverity,
   RecommendationType,
 } from '@/lib/analytics/productRecommendations';
+import type { AiGateDecision } from './ai/assistantAiGate';
+import type { AssistantCostEstimate } from './ai/assistantCostEstimator';
 
 export type AssistantToolName =
   | 'listar_periodos'
@@ -56,6 +58,28 @@ export type AssistantRunResult = {
     totalTokens?: number;
   };
   period?: AssistantPeriod | null;
+  aiTelemetry?: AssistantAiTelemetry;
+};
+
+export type AssistantAiTelemetry = {
+  provider?: string;
+  model?: string;
+  gateDecision?: AiGateDecision;
+  estimatedTokens?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+  estimatedCost?: AssistantCostEstimate;
+  actualUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  durationMs: number;
+  fallbackUsed: boolean;
+  validationPassed?: boolean;
+  failureReason?: string;
 };
 
 export type RecommendationFilters = {

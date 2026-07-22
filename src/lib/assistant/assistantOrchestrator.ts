@@ -1,14 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type {
-  Response,
-  ResponseFunctionToolCall,
-  ResponseInputItem,
-  Tool,
-} from 'openai/resources/responses/responses';
 import { generateProductRecommendations, type ProductRecommendation } from '@/lib/analytics/productRecommendations';
 import { getProductMetricsForClient } from '@/lib/analytics/productAnalyticsService';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
-import { SMARTMARKET_ASSISTANT_INSTRUCTIONS } from './assistantInstructions';
 import {
   formatExecutiveSummaryResponse,
   formatFallbackRecommendationsMessage,
@@ -19,31 +12,34 @@ import {
   formatUnknownResponse,
   getListTitle,
 } from './assistantPresentation';
-import { assistantOpenAITools } from './assistantToolSchemas';
-import { compararProdutoPeriodos, consultarProduto, executeAssistantTool, listarPeriodos } from './assistantTools';
+import { compararProdutoPeriodos, consultarProduto, listarPeriodos } from './assistantTools';
 import { routeAssistantIntent } from './router/intentRouter';
 import { normalizeIntentText } from './router/intentNormalizer';
 import { extractProductTerm } from './router/intentExtractor';
 import {
-  createOpenAIClient,
-  getAssistantModel,
   isSmartMarketAiEnabled,
   sanitizeOpenAIError,
 } from './openaiClient';
+import { decideAssistantAiMode } from './ai/assistantAiGate';
+import { buildAssistantAiContext } from './ai/assistantContextBuilder';
+import { buildAssistantPrompt } from './ai/assistantPromptBuilder';
+import { estimateAssistantCost, validateAssistantCostLimits } from './ai/assistantCostEstimator';
+import { validateAssistantResponse } from './ai/assistantResponseValidator';
+import { getAssistantLlmProvider } from './llm/providerFactory';
 import { limitAssistantAnswer } from './telegramMessageFormatter';
 import type {
+  AssistantAiTelemetry,
   AssistantContext,
   AssistantMessage,
   AssistantRunResult,
-  AssistantToolCallLog,
-  AssistantToolName,
 } from './assistantTypes';
 
-const MAX_TOOL_ROUNDS = 4;
-const MAX_TOOL_CALLS = 8;
 const MAX_STORED_MESSAGE_LENGTH = 2000;
+const MAX_AI_OUTPUT_TOKENS = 900;
+const DEFAULT_AI_TIMEOUT_MS = 25000;
 const SMARTMARKET_AI_DISABLED_MESSAGE = 'O assistente inteligente está temporariamente disponível apenas para comandos fixos.';
 const SAFE_FAILURE_MESSAGE = 'Não consegui consultar os dados agora. Tente novamente em alguns instantes.';
+const SAFE_REFUSAL_MESSAGE = 'Não posso alterar dados, revelar informações internas ou executar comandos inseguros. Posso consultar produtos, prioridades, reposição, vencimentos e capital parado.';
 
 type ConversationRow = {
   id: string;
@@ -63,29 +59,6 @@ function truncateStoredMessage(value: string) {
   return value.length > MAX_STORED_MESSAGE_LENGTH
     ? value.slice(0, MAX_STORED_MESSAGE_LENGTH)
     : value;
-}
-
-function isToolCall(item: Response['output'][number]): item is ResponseFunctionToolCall {
-  return item.type === 'function_call';
-}
-
-function parseArguments(argumentsText: string) {
-  try {
-    const parsed = JSON.parse(argumentsText) as unknown;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function extractUsage(response: Response) {
-  const usage = response.usage;
-  if (!usage) return undefined;
-  return {
-    inputTokens: usage.input_tokens,
-    outputTokens: usage.output_tokens,
-    totalTokens: usage.total_tokens,
-  };
 }
 
 async function getOrCreateConversation(supabase: SupabaseClient, clienteId: string, chatId: string) {
@@ -149,23 +122,6 @@ async function saveConversationMessages(
   if (error) throw new Error(error.message);
 }
 
-function buildInput(userText: string, recentMessages: AssistantMessage[]): ResponseInputItem[] {
-  const messages = recentMessages.map((message) => ({
-    type: 'message' as const,
-    role: message.role,
-    content: message.content,
-  }));
-
-  return [
-    ...messages,
-    {
-      type: 'message',
-      role: 'user',
-      content: userText,
-    },
-  ];
-}
-
 async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string, fallback?: string) {
   if (fallback) return fallback;
 
@@ -181,6 +137,22 @@ async function getMarketDisplayName(supabase: SupabaseClient, clienteId: string,
 
   const row = data as ClientNameRow | null;
   return row?.nome_mercado || 'SmartMarket';
+}
+
+function getAiTimeoutMs() {
+  const parsed = Number(process.env.SMARTMARKET_AI_TIMEOUT_MS || DEFAULT_AI_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_AI_TIMEOUT_MS;
+}
+
+function buildAiTelemetry(input: Omit<AssistantAiTelemetry, 'durationMs' | 'fallbackUsed'> & {
+  startedAt: number;
+  fallbackUsed: boolean;
+}): AssistantAiTelemetry {
+  const { startedAt, ...rest } = input;
+  return {
+    ...rest,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
 function sameCategory(recommendation: ProductRecommendation, category?: string) {
@@ -407,122 +379,149 @@ export async function runSmartMarketAssistant(context: AssistantContext): Promis
     return result;
   }
 
+  const gateDecision = decideAssistantAiMode(context.userText, recentMessages);
+
+  if (gateDecision.mode === 'refuse') {
+    const result: AssistantRunResult = {
+      message: SAFE_REFUSAL_MESSAGE,
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: fallback?.period || null,
+      aiTelemetry: buildAiTelemetry({
+        startedAt,
+        fallbackUsed: true,
+        gateDecision,
+        failureReason: gateDecision.reason,
+      }),
+    };
+    if (conversation) {
+      await saveConversationMessages(supabase, conversation.id, context.userText, result.message);
+    }
+    return result;
+  }
+
+  if (gateDecision.mode === 'deterministic') {
+    const result = fallback || {
+      message: SMARTMARKET_AI_DISABLED_MESSAGE,
+      usedFallback: true,
+      toolCalls: [],
+      model: null,
+      period: null,
+    };
+    result.aiTelemetry = buildAiTelemetry({
+      startedAt,
+      fallbackUsed: true,
+      gateDecision,
+    });
+    if (conversation) {
+      await saveConversationMessages(supabase, conversation.id, context.userText, result.message);
+    }
+    return result;
+  }
+
   try {
-    const client = createOpenAIClient();
-    const model = getAssistantModel();
-    let input = buildInput(context.userText, recentMessages);
-    const toolLogs: AssistantToolCallLog[] = [];
-    let totalCalls = 0;
-    let finalResponse: Response | null = null;
-
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await client.responses.create({
-        model,
-        instructions: SMARTMARKET_ASSISTANT_INSTRUCTIONS,
-        input,
-        tools: assistantOpenAITools as unknown as Tool[],
-        store: false,
-        max_output_tokens: 900,
-      });
-
-      const toolCalls = response.output.filter(isToolCall);
-      if (toolCalls.length === 0) {
-        finalResponse = response;
-        break;
-      }
-
-      if (totalCalls + toolCalls.length > MAX_TOOL_CALLS) {
-        return {
-          message: 'Não consegui concluir essa consulta com segurança. Tente fazer uma pergunta mais específica.',
-          usedFallback: false,
-          toolCalls: toolLogs,
-          model,
-          usage: extractUsage(response),
-        };
-      }
-
-      totalCalls += toolCalls.length;
-      const toolOutputs: ResponseInputItem[] = [];
-
-      for (const call of toolCalls) {
-        const toolStartedAt = Date.now();
-        const toolName = call.name as AssistantToolName;
-        try {
-          const output = await executeAssistantTool(
-            toolName,
-            parseArguments(call.arguments),
-            { clienteId: context.clienteId, supabase }
-          );
-          toolLogs.push({
-            name: toolName,
-            durationMs: Date.now() - toolStartedAt,
-            success: true,
-          });
-          toolOutputs.push({
-            type: 'function_call_output',
-            call_id: call.call_id,
-            output: JSON.stringify(output),
-          });
-        } catch (error) {
-          const code = error instanceof Error ? error.message.slice(0, 80) : 'tool_error';
-          toolLogs.push({
-            name: toolName,
-            durationMs: Date.now() - toolStartedAt,
-            success: false,
-            errorCode: code,
-          });
-          toolOutputs.push({
-            type: 'function_call_output',
-            call_id: call.call_id,
-            output: JSON.stringify({ error: 'Ferramenta rejeitada ou indisponível.' }),
-          });
-        }
-      }
-
-      input = [
-        ...input,
-        ...toolCalls,
-        ...toolOutputs,
-      ];
+    const providerSelection = getAssistantLlmProvider();
+    if (!providerSelection.ok) {
+      throw new Error(providerSelection.reason);
     }
 
-    if (!finalResponse) {
-      throw new Error('Resposta incompleta.');
+    const marketName = await getMarketDisplayName(supabase, context.clienteId, context.marketName);
+    const aiContext = await buildAssistantAiContext({
+      assistantContext: context,
+      supabase,
+      recentMessages,
+      gateDecision,
+      marketName,
+    });
+    const prompt = buildAssistantPrompt({ context: aiContext, gateDecision });
+    const costEstimate = estimateAssistantCost({
+      model: providerSelection.model,
+      systemInstructions: prompt.systemInstructions,
+      prompt: prompt.userPrompt,
+      context: aiContext,
+      maxOutputTokens: MAX_AI_OUTPUT_TOKENS,
+    });
+    const costLimit = validateAssistantCostLimits(costEstimate);
+    if (!costLimit.ok) {
+      throw new Error(costLimit.reason);
     }
 
-    const answer = limitAssistantAnswer(finalResponse.output_text || SAFE_FAILURE_MESSAGE);
+    const providerResponse = await providerSelection.provider.generate({
+      systemInstructions: prompt.systemInstructions,
+      userPrompt: prompt.userPrompt,
+      context: aiContext,
+      conversation: recentMessages,
+      metadata: {
+        purpose: prompt.purpose,
+        model: providerSelection.model,
+        maxOutputTokens: MAX_AI_OUTPUT_TOKENS,
+        timeoutMs: getAiTimeoutMs(),
+      },
+    });
+    const validation = validateAssistantResponse({
+      text: providerResponse.text,
+      context: aiContext,
+      maxLength: 3500,
+    });
+
+    if (!validation.valid) {
+      throw new Error(`response_validation_failed:${validation.reasons.join(',')}`);
+    }
+
+    const answer = limitAssistantAnswer(validation.sanitizedText || SAFE_FAILURE_MESSAGE);
     if (conversation) {
       await saveConversationMessages(supabase, conversation.id, context.userText, answer);
     }
 
     console.info('[SmartMarket Assistant]', {
-      cliente_id: context.clienteId,
-      chat_id: context.chatId,
       status: 'completed',
       duration_ms: Date.now() - startedAt,
-      model,
-      tool_calls: toolLogs.length,
-      tokens: extractUsage(finalResponse),
+      provider: providerSelection.name,
+      model: providerSelection.model,
+      gate: gateDecision.reason,
     });
 
     return {
       message: answer,
       usedFallback: false,
-      toolCalls: toolLogs,
-      model,
-      usage: extractUsage(finalResponse),
+      toolCalls: [],
+      model: providerResponse.model,
+      usage: providerResponse.usage,
+      period: fallback?.period || null,
+      aiTelemetry: buildAiTelemetry({
+        startedAt,
+        fallbackUsed: false,
+        provider: providerSelection.name,
+        model: providerSelection.model,
+        gateDecision,
+        estimatedTokens: {
+          inputTokens: costEstimate.estimatedInputTokens,
+          outputTokens: costEstimate.estimatedOutputTokens,
+          totalTokens: costEstimate.estimatedTotalTokens,
+        },
+        estimatedCost: costEstimate,
+        actualUsage: providerResponse.usage,
+        validationPassed: true,
+      }),
     };
   } catch (error) {
     const code = sanitizeOpenAIError(error);
     console.warn('[SmartMarket Assistant]', {
-      cliente_id: context.clienteId,
-      chat_id: context.chatId,
       status: 'failed',
       duration_ms: Date.now() - startedAt,
       error_code: code,
+      gate: gateDecision.reason,
     });
 
     if (fallback) {
+      fallback.aiTelemetry = buildAiTelemetry({
+        startedAt,
+        fallbackUsed: true,
+        gateDecision,
+        validationPassed: false,
+        failureReason: error instanceof Error ? error.message.slice(0, 80) : code,
+      });
       if (conversation) {
         await saveConversationMessages(supabase, conversation.id, context.userText, fallback.message);
       }
@@ -534,6 +533,13 @@ export async function runSmartMarketAssistant(context: AssistantContext): Promis
       usedFallback: true,
       toolCalls: [],
       model: null,
+      aiTelemetry: buildAiTelemetry({
+        startedAt,
+        fallbackUsed: true,
+        gateDecision,
+        validationPassed: false,
+        failureReason: error instanceof Error ? error.message.slice(0, 80) : code,
+      }),
     };
   }
 }

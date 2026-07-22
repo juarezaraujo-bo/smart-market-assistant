@@ -19,7 +19,7 @@ export function createOpenAIClient() {
 
   return new OpenAI({
     apiKey,
-    timeout: Number(process.env.OPENAI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
+    timeout: Number(process.env.SMARTMARKET_AI_TIMEOUT_MS || process.env.OPENAI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxRetries: 1,
   });
 }
