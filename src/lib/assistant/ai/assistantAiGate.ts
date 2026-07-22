@@ -1,3 +1,4 @@
+import type { AssistantResponseObjective } from '../behavior/assistantResponseObjectives';
 import type { AssistantMessage } from '../assistantTypes';
 import type { AssistantIntent, AssistantIntentRoute } from '../router/assistantIntents';
 import { routeAssistantIntent } from '../router/intentRouter';
@@ -11,7 +12,7 @@ export type AiGateDecision = {
   confidence: number;
   intent?: AssistantIntent;
   route?: AssistantIntentRoute;
-  purpose?: 'explanation' | 'strategy' | 'executive_summary' | 'promotion_advice' | 'inventory_advice';
+  purpose?: AssistantResponseObjective;
 };
 
 const DETERMINISTIC_INTENTS = new Set<AssistantIntent>([
@@ -63,11 +64,13 @@ function isWriteOrUnsafeRequest(normalized: string) {
 }
 
 function getGenerativePurpose(normalized: string): AiGateDecision['purpose'] | null {
+  if (includesAny(normalized, ['plano de acao', 'plano de ação', 'proximos 7 dias', 'próximos 7 dias', 'nesta semana', 'ordem de execucao', 'ordem de execução'])) return 'action_plan';
   if (includesAny(normalized, ['explique', 'explica', 'por que', 'porque'])) return 'explanation';
-  if (includesAny(normalized, ['estrategia', 'estratégia', 'plano de acao', 'plano de ação', 'o que voce faria', 'o que você faria'])) return 'strategy';
+  if (includesAny(normalized, ['estrategia', 'estratégia', 'o que voce faria', 'o que você faria', 'concentrar meus esforcos', 'concentrar meus esforços'])) return 'strategy';
   if (includesAny(normalized, ['resuma em linguagem simples', 'resuma os principais riscos', 'resuma os riscos', 'linguagem simples', 'explique os resultados', 'sem conhecimento tecnico', 'sem conhecimento técnico'])) return 'executive_summary';
-  if (includesAny(normalized, ['promocao', 'promoção', 'desconto'])) return 'promotion_advice';
-  if (includesAny(normalized, ['reduzir perdas', 'evitar perdas', 'estoque'])) return 'inventory_advice';
+  if (includesAny(normalized, ['vale a pena fazer promocao', 'vale a pena fazer promocao', 'explique esta promocao', 'risco de baixar o preco', 'desconto'])) return 'promotion_advice';
+  if (includesAny(normalized, ['devo comprar', 'comprar mais', 'suspender a reposicao', 'suspender a reposição', 'risco de falta'])) return 'inventory_advice';
+  if (includesAny(normalized, ['reduzir perdas', 'evitar perdas'])) return 'strategy';
   return null;
 }
 

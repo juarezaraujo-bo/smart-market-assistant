@@ -26,6 +26,11 @@ import { buildAssistantPrompt } from './ai/assistantPromptBuilder';
 import { estimateAssistantCost, validateAssistantCostLimits } from './ai/assistantCostEstimator';
 import { validateAssistantResponse } from './ai/assistantResponseValidator';
 import { getAssistantLlmProvider } from './llm/providerFactory';
+import {
+  getAssistantBehavior,
+  resolveAssistantResponseObjective,
+  validateAssistantBehaviorContext,
+} from './behavior/assistantBehaviorLibrary';
 import { limitAssistantAnswer } from './telegramMessageFormatter';
 import type {
   AssistantAiTelemetry,
@@ -435,6 +440,11 @@ export async function runSmartMarketAssistant(context: AssistantContext): Promis
       marketName,
     });
     const prompt = buildAssistantPrompt({ context: aiContext, gateDecision });
+    const behavior = getAssistantBehavior(resolveAssistantResponseObjective(gateDecision));
+    const behaviorContext = validateAssistantBehaviorContext(behavior, aiContext);
+    if (!behaviorContext.ok) {
+      throw new Error(`insufficient_behavior_context:${behaviorContext.missing.join(',')}`);
+    }
     const costEstimate = estimateAssistantCost({
       model: providerSelection.model,
       systemInstructions: prompt.systemInstructions,

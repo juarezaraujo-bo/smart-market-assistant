@@ -1,4 +1,5 @@
 import type { AssistantAiContext } from '../ai/assistantContextBuilder';
+import type { AssistantResponseObjective } from '../behavior/assistantResponseObjectives';
 import type { AssistantMessage } from '../assistantTypes';
 
 export type AssistantToolDefinition = {
@@ -15,7 +16,7 @@ export type AssistantToolCall = {
 };
 
 export type AssistantAiRequestMetadata = {
-  purpose: 'explanation' | 'strategy' | 'executive_summary' | 'promotion_advice' | 'inventory_advice';
+  purpose: AssistantResponseObjective;
   model: string;
   maxOutputTokens: number;
   timeoutMs: number;

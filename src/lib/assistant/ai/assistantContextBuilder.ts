@@ -175,7 +175,11 @@ function inferProductTermFromQuestion(question: string, recommendations: Product
 }
 
 function contextLimitsForPurpose(gateDecision: AiGateDecision) {
-  if (gateDecision.purpose === 'explanation' || gateDecision.purpose === 'promotion_advice') {
+  if (
+    gateDecision.purpose === 'explanation' ||
+    gateDecision.purpose === 'promotion_advice' ||
+    gateDecision.purpose === 'inventory_advice'
+  ) {
     return {
       recommendations: 3,
       products: 1,

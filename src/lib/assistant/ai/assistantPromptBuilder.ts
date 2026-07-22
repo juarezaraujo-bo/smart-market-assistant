@@ -1,26 +1,20 @@
 import { SMARTMARKET_ASSISTANT_INSTRUCTIONS } from '../assistantInstructions';
+import {
+  buildBehaviorInstructions,
+  getAssistantBehavior,
+  resolveAssistantResponseObjective,
+} from '../behavior/assistantBehaviorLibrary';
+import type { AssistantResponseObjective } from '../behavior/assistantResponseObjectives';
 import type { AssistantAiContext } from './assistantContextBuilder';
 import type { AiGateDecision } from './assistantAiGate';
 
-export type AssistantPromptPurpose =
-  | 'explanation'
-  | 'strategy'
-  | 'executive_summary'
-  | 'promotion_advice'
-  | 'inventory_advice';
+export type AssistantPromptPurpose = AssistantResponseObjective;
 
 export type AssistantPrompt = {
   systemInstructions: string;
   userPrompt: string;
   purpose: AssistantPromptPurpose;
 };
-
-const PRESENTATION_RULES = [
-  'Use linguagem simples para dono de pequeno mercado.',
-  'Responda de forma curta para Telegram.',
-  'Nao mostre custo, tokens, IDs internos ou detalhes de implementacao.',
-  'Use termos como estimado, potencial, simulacao ou projecao quando falar de efeito futuro.',
-].join('\n');
 
 const DATA_RULES = [
   'Use somente o contexto estruturado abaixo.',
@@ -32,7 +26,7 @@ const DATA_RULES = [
 ].join('\n');
 
 function purposeFromGate(gateDecision: AiGateDecision): AssistantPromptPurpose {
-  return gateDecision.purpose || 'explanation';
+  return resolveAssistantResponseObjective(gateDecision);
 }
 
 function sanitizeContextForPrompt(context: AssistantAiContext) {
@@ -50,14 +44,15 @@ export function buildAssistantPrompt(input: {
   gateDecision: AiGateDecision;
 }): AssistantPrompt {
   const purpose = purposeFromGate(input.gateDecision);
+  const behavior = getAssistantBehavior(purpose);
   const systemInstructions = [
     sanitizeInstructionsForModel(SMARTMARKET_ASSISTANT_INSTRUCTIONS.trim()),
     '',
     'Fundacao IA 4.1 - regras permanentes:',
     DATA_RULES,
     '',
-    'Regras de apresentacao:',
-    PRESENTATION_RULES,
+    'Comportamento consultivo:',
+    buildBehaviorInstructions(behavior),
   ].join('\n');
 
   const userPrompt = [
